@@ -1,0 +1,11 @@
+[project]
+name = "insift"
+version = "0.1.0"
+description = "Production-minded MVP for evidence-backed startup opportunity discovery."
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
