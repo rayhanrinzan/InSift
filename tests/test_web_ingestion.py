@@ -1,0 +1,114 @@
+"""Tests for public web evidence discovery and normalization."""
+
+import pytest
+
+from src.ingestion.manual import IngestionError
+from src.ingestion.web import (
+    WebEvidenceDiscoveryService,
+    candidate_from_search_result,
+    generate_evidence_queries,
+)
+from src.research.competitor_search import MockSearchProvider
+from src.research.schemas import SearchResult
+
+
+class StaticSearchProvider:
+    """Return the same bounded results for every generated query."""
+
+    name = "static"
+
+    def __init__(self, results: list[SearchResult]) -> None:
+        self.results = results
+        self.queries: list[str] = []
+
+    def search(
+        self,
+        query: str,
+        *,
+        max_results: int,
+        search_depth: str,
+    ) -> list[SearchResult]:
+        del search_depth
+        self.queries.append(query)
+        return self.results[:max_results]
+
+
+def test_evidence_queries_target_selected_public_sources() -> None:
+    queries = generate_evidence_queries(
+        "manual invoicing",
+        target_customer="small agencies",
+        source_types=("forums", "issues"),
+    )
+
+    assert len(queries) == 2
+    assert all('"manual invoicing"' in query for query in queries)
+    assert all('"small agencies"' in query for query in queries)
+    assert any("site:news.ycombinator.com" in query for query in queries)
+    assert any("site:github.com/issues" in query for query in queries)
+
+
+def test_evidence_queries_require_topic_and_source() -> None:
+    with pytest.raises(IngestionError, match="Enter a market"):
+        generate_evidence_queries(" ")
+    with pytest.raises(IngestionError, match="at least one source"):
+        generate_evidence_queries("billing", source_types=())
+
+
+def test_web_discovery_deduplicates_urls_and_preserves_queries() -> None:
+    provider = StaticSearchProvider(
+        [
+            SearchResult(
+                title="Manual invoicing complaint",
+                url="https://example.com/discussion?utm_source=test",
+                snippet="This manual process takes hours every week.",
+                score=0.8,
+            ),
+            SearchResult(
+                title="Manual invoicing complaint",
+                url="https://example.com/discussion",
+                snippet="This manual process takes hours every week and is frustrating.",
+                score=0.9,
+            ),
+        ]
+    )
+
+    candidates = WebEvidenceDiscoveryService(provider).discover(
+        "manual invoicing",
+        source_types=("forums", "issues"),
+        max_results=10,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].score == 0.9
+    assert len(candidates[0].source_queries) == 2
+    assert len(provider.queries) == 2
+
+
+def test_candidate_becomes_attributable_submission() -> None:
+    candidate = candidate_from_search_result(
+        SearchResult(
+            title="A recurring clinic problem",
+            url="https://community.example/clinic-problem",
+            snippet="We still use Excel and the manual process takes hours.",
+            score=0.92,
+        ),
+        query="clinic workflow customer complaint",
+    )
+
+    assert candidate is not None
+    submission = candidate.to_submission()
+    assert submission.platform == "web"
+    assert submission.source_url == "https://community.example/clinic-problem"
+    assert submission.community == "community.example"
+    assert submission.metadata_json["ingestion_method"] == "web_search"
+
+
+def test_demo_search_returns_problem_evidence() -> None:
+    results = MockSearchProvider().search(
+        "clinic referral customer complaint discussion manual process",
+        max_results=10,
+        search_depth="basic",
+    )
+
+    assert results
+    assert any("takes hours" in result.snippet.lower() for result in results)

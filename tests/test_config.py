@@ -7,8 +7,8 @@ import pytest
 from src.config import Settings, update_env_file
 
 
-def test_live_readiness_requires_all_external_credentials() -> None:
-    partial = Settings(
+def test_live_readiness_treats_reddit_as_optional() -> None:
+    settings = Settings(
         demo_mode=False,
         llm_provider="openai",
         llm_api_key="openai-key",
@@ -16,15 +16,10 @@ def test_live_readiness_requires_all_external_credentials() -> None:
         search_provider="tavily",
         search_api_key="tavily-key",
     )
-    ready = partial.copy(
-        update={
-            "reddit_client_id": "reddit-id",
-            "reddit_client_secret": "reddit-secret",
-        }
-    )
 
-    assert partial.live_ready is False
-    assert ready.live_ready is True
+    assert settings.live_ready is True
+    assert settings.reddit_ready is False
+    assert settings.copy(update={"search_api_key": None}).live_ready is False
 
 
 def test_env_update_preserves_unmodified_secret(tmp_path: Path) -> None:

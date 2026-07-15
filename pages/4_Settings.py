@@ -66,7 +66,7 @@ def main() -> None:
 
     section_header(
         "Provider readiness",
-        "Live workflows become available as each required provider is connected.",
+        "Core workflows require extraction, embeddings, and research. Reddit intake is optional.",
     )
     llm, embeddings, search, reddit = st.columns(4)
     with llm:
@@ -76,7 +76,7 @@ def main() -> None:
     with search:
         _provider_status("Research", settings.search_ready)
     with reddit:
-        _provider_status("Reddit", settings.reddit_ready)
+        _provider_status("Reddit (optional)", settings.reddit_ready)
 
     section_header("Database", "The active storage connection for this workspace.")
     status_column, address_column = st.columns([1, 4])

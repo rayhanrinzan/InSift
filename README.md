@@ -32,14 +32,14 @@ FLOWSIFT_PYTHON=/path/to/python bash scripts/run_app.sh --server.port 8502
 
 ## What "Fully Live" Means
 
-The web server can run without provider credentials, but real extraction, semantic clustering, web research, and Reddit collection require external API access.
+The web server can run without provider credentials. Real extraction and semantic clustering require OpenAI, public-web discovery and competitor research require Tavily, and Reddit collection requires Reddit OAuth.
 
-FlowSift AI is fully live when the **Settings** page shows all four readiness badges as **Ready**:
+FlowSift AI's core workflow is live when Extraction, Embeddings, and Research are ready. Reddit is an optional evidence connector:
 
 - **Extraction:** OpenAI is configured.
 - **Embeddings:** OpenAI embeddings or local Sentence Transformers are configured.
 - **Research:** Tavily is configured.
-- **Reddit:** approved Reddit OAuth credentials are configured.
+- **Reddit (optional):** approved Reddit OAuth credentials enable Reddit intake.
 
 An empty live database is normal. Opportunities appear only after FlowSift AI processes evidence.
 
@@ -50,10 +50,10 @@ An empty live database is normal. Opportunities appear only after FlowSift AI pr
 You need:
 
 - An [OpenAI API key](https://platform.openai.com/api-keys) for structured problem extraction and competitor classification.
-- A [Tavily API key](https://app.tavily.com) for web competitor research.
-- An approved [Reddit developer application](https://developers.reddit.com/app-registration) with a client ID and client secret for Reddit collection.
+- A [Tavily API key](https://app.tavily.com) for public-web discovery and competitor research.
+- Optional: an approved [Reddit developer application](https://developers.reddit.com/app-registration) with a client ID and client secret for Reddit collection.
 
-Reddit may require application review or approval. Manual paste and CSV ingestion still work without Reddit after OpenAI is ready.
+Reddit may require application review or approval. Web search works without Reddit after Tavily is ready, while manual paste and CSV ingestion work after OpenAI and embeddings are ready. Demo mode exercises every discovery workflow without external credentials.
 
 Never commit API keys. FlowSift AI stores locally entered credentials in the ignored `.env` file.
 
@@ -101,14 +101,15 @@ The launcher initializes whichever database is named in `.env` before starting t
 ### 5. Create the first real opportunity
 
 1. Open **Discover**.
-2. Choose **Paste discussion**.
-3. Paste a genuine first-person complaint or workflow description. Concrete evidence works best, such as time lost, repetitive work, expensive software, missed revenue, spreadsheet workarounds, or requests for a better tool.
-4. Optionally add the title, source URL, author, and community. Source metadata improves traceability and confidence.
-5. Click **Extract and score**.
-6. Review whether the evidence was accepted or rejected in **Extraction review**.
-7. Open **Opportunities** to see the resulting cluster and scores.
-8. Open the opportunity, then click **Research competitors** to run Tavily search and OpenAI classification.
-9. Inspect **Evidence**, **Competitors**, and **Scoring** before treating the opportunity as validated.
+2. Choose **Web search** and enter a market, workflow, or problem worth investigating.
+3. Search public forums, issue trackers, review sites, or the broader web.
+4. Open promising sources, select credible first-hand discussions, and extract them.
+5. Use **Paste discussion** for individual interview notes, support messages, sales-call notes, or public discussions you already have.
+6. Use **Upload CSV** for customer-owned exports such as support tickets, survey responses, cancellation feedback, interview transcripts, and CRM notes.
+7. Review whether the evidence was accepted or rejected in **Extraction review**.
+8. Open **Opportunities** to see the resulting clusters and scores.
+9. Open an opportunity, then click **Research competitors** to run Tavily search and OpenAI classification.
+10. Inspect **Evidence**, **Competitors**, and **Scoring** before treating the opportunity as validated.
 
 ## How to Use Every Page
 
@@ -129,17 +130,18 @@ Click an opportunity title to open its full details.
 
 Use **Discover** to add source evidence.
 
-**Paste discussion** processes one source at a time. Include source metadata whenever it is available.
+**Web search** finds public customer-pain evidence without Reddit. Enter a market, workflow, or problem and optionally name the target customer. Search results can come from:
 
-**Reddit** supports:
+- Public forums and communities
+- GitHub issue trackers
+- Product-review sites
+- The broader public web
 
-- A Reddit post URL
-- A subreddit name
-- Keyword search with an optional subreddit filter
+Results are deduplicated and shown with their source URL, domain, excerpt, and search relevance. Nothing is extracted until it has been selected for ingestion. Live search uses Tavily; Demo mode provides an offline sample workflow.
 
-Reddit collection is capped at 100 items per request. Collection requires approved Reddit OAuth credentials and should comply with Reddit's policies.
+**Paste discussion** processes one source at a time. It is intended for interview notes, support messages, sales-call notes, public forum posts, and other evidence already collected by the user. Include source metadata whenever it is available.
 
-**Upload CSV** processes a bounded batch. The CSV must contain one of these text columns:
+**Upload CSV** is intended for customer-owned bulk exports, including support tickets, survey free-text responses, NPS comments, cancellation reasons, interview transcripts, and CRM notes. The CSV must contain one of these text columns:
 
 ```text
 raw_text
@@ -150,6 +152,14 @@ content
 ```
 
 Optional columns include `source_url`, `title`, `source_author`, and `community`.
+
+**Reddit** supports:
+
+- A Reddit post URL
+- A subreddit name
+- Keyword search with an optional subreddit filter
+
+Reddit collection is capped at 100 items per request. Collection requires approved Reddit OAuth credentials and should comply with Reddit's policies.
 
 The **Extraction review** section separates accepted evidence from rejected text. Rejected text remains reviewable but is not clustered or scored.
 
@@ -264,7 +274,8 @@ Live databases begin empty. Configure OpenAI, submit evidence through **Discover
 
 Open **Settings** and inspect the readiness badges:
 
-- Discover requires extraction and embeddings.
+- Web search requires Tavily (or Demo mode); extracting selected results requires extraction and embeddings.
+- Paste and CSV ingestion require extraction and embeddings.
 - Competitor research requires extraction and search.
 - Reddit collection additionally requires Reddit OAuth.
 

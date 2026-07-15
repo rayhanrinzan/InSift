@@ -14,6 +14,12 @@ from src.ingestion.manual import (
     parse_csv_submissions,
 )
 from src.ingestion.reddit import RedditIngestionError, build_reddit_client
+from src.ingestion.web import (
+    WEB_SOURCE_LABELS,
+    WebEvidenceCandidate,
+    WebEvidenceDiscoveryService,
+)
+from src.research.competitor_search import SearchProviderError, build_search_provider
 from src.services.discovery_service import DiscoveryResult, build_discovery_service
 from src.ui.components import (
     configure_page,
@@ -148,6 +154,62 @@ def _process_batch(
     return results
 
 
+def _render_web_candidates(
+    candidates: list[WebEvidenceCandidate],
+    *,
+    discovery_ready: bool,
+    SessionFactory: object,
+) -> None:
+    """Render a review-first web evidence selection workflow."""
+
+    if not candidates:
+        st.info("No attributable discussions matched this search. Try a broader topic.")
+        return
+
+    section_header(
+        "Review sources",
+        "Select credible discussions to extract. Every result keeps its original URL.",
+    )
+    selected: list[WebEvidenceCandidate] = []
+    for index, candidate in enumerate(candidates):
+        selection_key = f"web-evidence-{index}-{candidate.url}"
+        with st.container(border=True):
+            checked = st.checkbox(
+                candidate.title,
+                value=True,
+                key=selection_key,
+            )
+            source, relevance, action = st.columns([2.5, 1, 1])
+            source.caption(candidate.domain)
+            relevance.caption(f"Search relevance {candidate.score * 100:.0f}")
+            action.link_button(
+                "Open source",
+                candidate.url,
+                use_container_width=True,
+            )
+            st.write(candidate.preview)
+            if checked:
+                selected.append(candidate)
+
+    if not discovery_ready:
+        st.info(
+            "Sources can be searched now. Configure extraction and embeddings to "
+            "ingest the selected discussions."
+        )
+    if st.button(
+        f"Extract {len(selected)} selected source(s)",
+        type="primary",
+        use_container_width=True,
+        disabled=not selected or not discovery_ready,
+    ):
+        _process_batch(
+            [candidate.to_submission() for candidate in selected],
+            SessionFactory=SessionFactory,
+            label="web source(s)",
+        )
+        st.session_state.pop("web-evidence-candidates", None)
+
+
 def main() -> None:
     """Render the Discover page."""
 
@@ -172,9 +234,76 @@ def main() -> None:
             use_container_width=False,
         )
 
-    manual_tab, reddit_tab, csv_tab = st.tabs(
-        ["Paste discussion", "Reddit", "Upload CSV"]
+    web_tab, manual_tab, csv_tab, reddit_tab = st.tabs(
+        ["Web search", "Paste discussion", "Upload CSV", "Reddit"]
     )
+    with web_tab:
+        with st.form("web-discovery"):
+            topic = st.text_input(
+                "Market, workflow, or problem",
+                placeholder="patient referral follow-up, vendor renewals, manual invoicing...",
+            )
+            target_customer = st.text_input(
+                "Target customer (optional)",
+                placeholder="independent clinics, small finance teams, agencies...",
+            )
+            label_to_key = {label: key for key, label in WEB_SOURCE_LABELS.items()}
+            selected_labels = st.multiselect(
+                "Public sources",
+                list(label_to_key),
+                default=[
+                    WEB_SOURCE_LABELS["forums"],
+                    WEB_SOURCE_LABELS["issues"],
+                    WEB_SOURCE_LABELS["reviews"],
+                ],
+            )
+            result_limit = st.number_input(
+                "Maximum sources", min_value=1, max_value=100, value=15
+            )
+            web_submitted = st.form_submit_button(
+                "Find customer discussions",
+                type="primary",
+                use_container_width=True,
+                disabled=not settings.search_ready,
+            )
+        if not settings.search_ready:
+            st.info(
+                "Configure Tavily in Settings for live public-web discovery, or "
+                "enable Demo mode to try the workflow offline."
+            )
+        if web_submitted:
+            try:
+                with st.status("Searching public sources", expanded=True) as status:
+                    status.write("Building evidence-oriented search queries")
+                    service = WebEvidenceDiscoveryService(
+                        build_search_provider(settings),
+                        search_depth=settings.search_depth,
+                    )
+                    status.write("Searching and deduplicating attributable results")
+                    candidates = service.discover(
+                        topic,
+                        target_customer=target_customer or None,
+                        source_types=tuple(
+                            label_to_key[label] for label in selected_labels
+                        ),
+                        max_results=int(result_limit),
+                    )
+                    st.session_state["web-evidence-candidates"] = candidates
+                    status.update(
+                        label=f"Found {len(candidates)} source(s)",
+                        state="complete",
+                        expanded=False,
+                    )
+            except (IngestionError, SearchProviderError) as exc:
+                st.error(f"Public web discovery could not complete: {exc}")
+        web_candidates = st.session_state.get("web-evidence-candidates")
+        if web_candidates is not None:
+            _render_web_candidates(
+                web_candidates,
+                discovery_ready=settings.discovery_ready,
+                SessionFactory=SessionFactory,
+            )
+
     with manual_tab:
         with st.form("manual-discovery"):
             discussion = st.text_area(

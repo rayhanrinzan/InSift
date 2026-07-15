@@ -111,16 +111,24 @@ class TavilySearchProvider:
                 return [self._normalize(item) for item in body.get("results", [])]
             except HTTPError as exc:
                 if exc.code in {401, 403}:
-                    raise SearchAuthenticationError("The Tavily API key was rejected.") from exc
+                    raise SearchAuthenticationError(
+                        "The Tavily API key was rejected."
+                    ) from exc
                 if exc.code == 400:
-                    raise SearchProviderError("Tavily rejected the search request.") from exc
+                    raise SearchProviderError(
+                        "Tavily rejected the search request."
+                    ) from exc
                 last_error = exc
                 if exc.code != 429 and exc.code < 500:
-                    raise SearchProviderError(f"Tavily search failed with HTTP {exc.code}.") from exc
+                    raise SearchProviderError(
+                        f"Tavily search failed with HTTP {exc.code}."
+                    ) from exc
             except (TimeoutError, socket.timeout, URLError) as exc:
                 last_error = exc
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise SearchProviderError("Tavily returned an invalid response.") from exc
+                raise SearchProviderError(
+                    "Tavily returned an invalid response."
+                ) from exc
             if attempt < self.max_attempts - 1:
                 self.sleep_fn(0.5 * (2**attempt))
 
@@ -151,13 +159,66 @@ class MockSearchProvider:
 
         del search_depth
         normalized = query.lower()
-        if any(term in normalized for term in ("clinic", "patient", "referral", "intake")):
+        if "customer complaint discussion" in normalized:
+            return self._evidence_results(normalized)[:max_results]
+        if any(
+            term in normalized for term in ("clinic", "patient", "referral", "intake")
+        ):
             results = self._clinic_results()
         elif any(term in normalized for term in ("vendor", "renewal", "contract")):
             results = self._renewal_results()
         else:
             results = self._workflow_results()
         return results[:max_results]
+
+    @staticmethod
+    def _evidence_results(query: str) -> list[SearchResult]:
+        """Return attributable demo discussions for the web discovery workflow."""
+
+        if any(term in query for term in ("clinic", "patient", "referral")):
+            return [
+                SearchResult(
+                    title="Referral follow-up is eating our week",
+                    url="https://community.example/clinic-referral-follow-up",
+                    snippet=(
+                        "As a clinic manager, we still use Excel for referral follow-up "
+                        "every day. The manual process takes hours and missed reminders "
+                        "put patients at risk."
+                    ),
+                    score=0.94,
+                ),
+                SearchResult(
+                    title="Small practice intake workaround",
+                    url="https://issues.example/small-practice-intake",
+                    snippet=(
+                        "Our staff copy-paste patient intake details between systems every "
+                        "week. It is repetitive, frustrating, and errors are easy to miss."
+                    ),
+                    score=0.86,
+                ),
+            ]
+        return [
+            SearchResult(
+                title="Operations workflow still depends on spreadsheets",
+                url="https://community.example/manual-operations-workflow",
+                snippet=(
+                    "We still use spreadsheets and copy-paste updates across systems every "
+                    "week. This manual process takes hours and the team wishes there was a "
+                    "simpler tool."
+                ),
+                score=0.91,
+            ),
+            SearchResult(
+                title="Recurring handoffs are difficult to track",
+                url="https://issues.example/recurring-handoffs",
+                snippet=(
+                    "Our operations team manually coordinates handoffs through inbox "
+                    "reminders every day. The repetitive work is frustrating and missed "
+                    "updates create risk."
+                ),
+                score=0.83,
+            ),
+        ]
 
     @staticmethod
     def _clinic_results() -> list[SearchResult]:
@@ -173,9 +234,16 @@ class MockSearchProvider:
                     "relationship_type": "direct",
                     "target_customer": "small clinic operations teams",
                     "problem_solved": "patient intake and referral follow-up",
-                    "features": ["follow-up queue", "owner reminders", "status tracking"],
+                    "features": [
+                        "follow-up queue",
+                        "owner reminders",
+                        "status tracking",
+                    ],
                     "pricing_position": "paid SaaS",
-                    "strengths": ["healthcare-specific workflow", "clear accountability"],
+                    "strengths": [
+                        "healthcare-specific workflow",
+                        "clear accountability",
+                    ],
                     "weaknesses": ["limited EHR integrations", "pricing is opaque"],
                     "possible_gap": "A lighter low-cost workflow for independent clinics.",
                 },
