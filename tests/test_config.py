@@ -19,7 +19,19 @@ def test_live_readiness_treats_reddit_as_optional() -> None:
 
     assert settings.live_ready is True
     assert settings.reddit_ready is False
-    assert settings.copy(update={"search_api_key": None}).live_ready is False
+    without_paid_search = settings.copy(update={"search_api_key": None})
+    assert without_paid_search.live_ready is True
+    assert without_paid_search.public_search_ready is True
+    assert without_paid_search.research_ready is False
+
+
+def test_default_live_workflow_requires_no_paid_credentials() -> None:
+    settings = Settings(_env_file=None, demo_mode=False)
+
+    assert settings.llm_provider == "local"
+    assert settings.embedding_provider == "deterministic"
+    assert settings.search_provider == "community"
+    assert settings.live_ready is True
 
 
 def test_env_update_preserves_unmodified_secret(tmp_path: Path) -> None:

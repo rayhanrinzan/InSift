@@ -97,6 +97,28 @@ class OpenAIProblemExtractionProvider:
             raise ExtractionError(str(exc)) from exc
 
 
+class ResilientProblemExtractionProvider:
+    """Use OpenAI when available and local evidence rules when it is not."""
+
+    def __init__(
+        self,
+        primary: ProblemExtractionProvider,
+        fallback: ProblemExtractionProvider,
+    ) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.primary_available = True
+
+    def extract_problem(self, text: str, prompt: str) -> Any:
+        if not self.primary_available:
+            return self.fallback.extract_problem(text, prompt)
+        try:
+            return self.primary.extract_problem(text, prompt)
+        except ExtractionError:
+            self.primary_available = False
+            return self.fallback.extract_problem(text, prompt)
+
+
 EVIDENCE_PHRASES = (
     "waste hours",
     "takes forever",
@@ -205,7 +227,7 @@ PAIN_PATTERNS: dict[PainType, tuple[str, ...]] = {
 
 
 class DeterministicMockExtractionProvider:
-    """Evidence-grounded extractor used in demo mode and tests."""
+    """Conservative local extractor grounded in explicit source text."""
 
     def extract_problem(self, text: str, prompt: str) -> ExtractedProblem:
         """Derive conservative structured fields from explicit text signals."""
@@ -312,21 +334,25 @@ class DeterministicMockExtractionProvider:
 
 
 def build_problem_extraction_provider(settings: Settings) -> ProblemExtractionProvider:
-    """Build an explicitly configured extraction provider."""
+    """Build extraction with a local path that never requires paid API quota."""
 
     provider = (settings.llm_provider or "").lower()
-    if settings.demo_mode or provider == "mock":
-        return DeterministicMockExtractionProvider()
+    local = DeterministicMockExtractionProvider()
+    if settings.demo_mode or provider in {"", "local", "mock"}:
+        return local
+    if provider == "openai" and not settings.llm_api_key:
+        return local
     if provider == "openai":
-        if not settings.llm_api_key:
-            raise ExtractionError("LLM_API_KEY is required for OpenAI extraction.")
-        return OpenAIProblemExtractionProvider(
+        primary = OpenAIProblemExtractionProvider(
             OpenAIClient(
                 settings.llm_api_key.get_secret_value(),
                 model=settings.llm_model,
                 base_url=settings.openai_base_url,
             )
         )
+        return ResilientProblemExtractionProvider(primary, local)
+    if provider in {"deterministic", "rule_based"}:
+        return DeterministicMockExtractionProvider()
     raise ExtractionError(
-        "Configure LLM_PROVIDER=openai with an API key, or enable demo mode."
+        "Configure LLM_PROVIDER as local or openai."
     )

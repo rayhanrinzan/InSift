@@ -15,13 +15,13 @@ class Settings(BaseSettings):
 
     app_env: str = Field("development", env="APP_ENV")
     database_url: str = Field("sqlite:///flowsift.db", env="DATABASE_URL")
-    llm_provider: Optional[str] = Field(None, env="LLM_PROVIDER")
+    llm_provider: Optional[str] = Field("local", env="LLM_PROVIDER")
     llm_api_key: Optional[SecretStr] = Field(None, env="LLM_API_KEY")
     llm_model: str = Field("gpt-5.6-luna", env="LLM_MODEL")
     openai_base_url: str = Field("https://api.openai.com/v1", env="OPENAI_BASE_URL")
-    embedding_provider: str = Field("sentence_transformers", env="EMBEDDING_PROVIDER")
+    embedding_provider: str = Field("deterministic", env="EMBEDDING_PROVIDER")
     embedding_model: str = Field("all-MiniLM-L6-v2", env="EMBEDDING_MODEL")
-    search_provider: Optional[str] = Field(None, env="SEARCH_PROVIDER")
+    search_provider: Optional[str] = Field("community", env="SEARCH_PROVIDER")
     search_api_key: Optional[SecretStr] = Field(None, env="SEARCH_API_KEY")
     search_depth: str = Field("basic", env="SEARCH_DEPTH")
     cluster_similarity_threshold: float = Field(
@@ -67,10 +67,8 @@ class Settings(BaseSettings):
     @property
     def llm_ready(self) -> bool:
         provider = (self.llm_provider or "").lower()
-        return (
-            self.demo_mode
-            or provider == "mock"
-            or bool(provider == "openai" and self.llm_api_key)
+        return provider in {"", "local", "mock", "deterministic", "rule_based"} or (
+            provider == "openai"
         )
 
     @property
@@ -82,15 +80,33 @@ class Settings(BaseSettings):
             "sentence_transformers",
         }:
             return True
-        return bool(provider == "openai" and self.llm_api_key)
+        return provider == "openai"
 
     @property
     def search_ready(self) -> bool:
+        """Return whether Tavily-backed competitor research is configured."""
+
         provider = (self.search_provider or "").lower()
         return (
             self.demo_mode
             or provider == "mock"
             or bool(provider == "tavily" and self.search_api_key)
+        )
+
+    @property
+    def public_search_ready(self) -> bool:
+        """Credential-free community APIs keep public discovery available."""
+
+        return not self.demo_mode
+
+    @property
+    def research_ready(self) -> bool:
+        """Return whether optional Tavily competitor research is available."""
+
+        return bool(
+            not self.demo_mode
+            and (self.search_provider or "").lower() == "tavily"
+            and self.search_api_key
         )
 
     @property
@@ -103,7 +119,11 @@ class Settings(BaseSettings):
 
     @property
     def live_ready(self) -> bool:
-        return bool(not self.demo_mode and self.discovery_ready and self.search_ready)
+        return bool(
+            not self.demo_mode
+            and self.discovery_ready
+            and self.public_search_ready
+        )
 
     class Config:
         env_file = ".env"

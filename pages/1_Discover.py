@@ -23,7 +23,10 @@ from src.ingestion.web import (
     WebEvidenceCandidate,
     WebEvidenceDiscoveryService,
 )
-from src.research.competitor_search import SearchProviderError, build_search_provider
+from src.research.competitor_search import SearchProviderError
+from src.research.public_discussion_search import (
+    build_public_discussion_search_provider,
+)
 from src.services.discovery_service import DiscoveryResult, build_discovery_service
 from src.services.problem_scout_service import (
     SCOUT_FOCUS_LABELS,
@@ -252,20 +255,11 @@ def _render_web_candidates(
 
 
 def _live_extraction_ready(settings: Settings) -> bool:
-    return bool(
-        not settings.demo_mode
-        and (settings.llm_provider or "").lower() == "openai"
-        and settings.llm_api_key
-        and settings.embedding_ready
-    )
+    return bool(not settings.demo_mode and settings.discovery_ready)
 
 
 def _live_search_ready(settings: Settings) -> bool:
-    return bool(
-        not settings.demo_mode
-        and (settings.search_provider or "").lower() == "tavily"
-        and settings.search_api_key
-    )
+    return settings.public_search_ready
 
 
 def _live_scout_ready(settings: Settings) -> bool:
@@ -375,7 +369,7 @@ def _render_opportunity_scout(
     if not _live_scout_ready(settings):
         st.warning(
             "Automatic discovery only runs against real public sources. Turn Demo "
-            "mode off and configure OpenAI plus Tavily in Settings to use it."
+            "mode off and configure a working embedding provider to use it."
         )
         render_page_link(
             "pages/4_Settings.py",
@@ -396,7 +390,7 @@ def _render_opportunity_scout(
 
                 with SessionFactory() as session:  # type: ignore[operator]
                     scout = ProblemScoutService(
-                        build_search_provider(settings),
+                        build_public_discussion_search_provider(settings),
                         build_discovery_service(session, settings),
                         build_opportunity_synthesizer(settings),
                         search_depth=settings.search_depth,
@@ -404,7 +398,7 @@ def _render_opportunity_scout(
                     run = scout.run(
                         focus=focus,
                         segment_limit=4,
-                        results_per_segment=3,
+                        results_per_segment=8,
                         offset=scan_index * 4,
                         progress_callback=update_progress,
                     )
@@ -475,15 +469,15 @@ def _render_topic_search(
         )
     if not _live_search_ready(settings):
         st.warning(
-            "Public web search requires Demo mode off and a Tavily key. Simulated "
-            "search results are never shown as sources."
+            "Public web search is disabled in Demo mode. Simulated search results "
+            "are never shown as sources."
         )
     if web_submitted:
         try:
             with st.status("Searching public sources", expanded=True) as status:
                 status.write("Building evidence-oriented search queries")
                 service = WebEvidenceDiscoveryService(
-                    build_search_provider(settings),
+                    build_public_discussion_search_provider(settings),
                     search_depth=settings.search_depth,
                 )
                 status.write("Searching and deduplicating attributable results")
@@ -527,13 +521,12 @@ def main() -> None:
     if settings.demo_mode:
         st.warning(
             "Demo mode is on. Automatic public-source discovery is disabled because "
-            "demo search results are fictional. Turn Demo mode off and configure "
-            "OpenAI plus Tavily in Settings for real discovery."
+            "demo search results are fictional. Turn Demo mode off for real discovery."
         )
     elif not settings.discovery_ready:
         st.warning(
-            "Live extraction is not configured. Add an OpenAI key and embedding "
-            "provider in Settings before processing new evidence."
+            "Evidence analysis is not configured. Select a local or OpenAI analysis "
+            "provider and a working embedding provider in Settings."
         )
         render_page_link(
             "pages/4_Settings.py",

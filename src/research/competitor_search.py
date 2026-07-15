@@ -68,6 +68,7 @@ class TavilySearchProvider:
         self,
         api_key: str,
         *,
+        include_domains: tuple[str, ...] = (),
         timeout_seconds: float = 15.0,
         max_attempts: int = 3,
         sleep_fn: Callable[[float], None] = time.sleep,
@@ -76,6 +77,7 @@ class TavilySearchProvider:
         if not api_key.strip():
             raise SearchAuthenticationError("A Tavily API key is required.")
         self.api_key = api_key
+        self.include_domains = include_domains
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max_attempts
         self.sleep_fn = sleep_fn
@@ -86,14 +88,15 @@ class TavilySearchProvider:
     ) -> list[SearchResult]:
         """Execute a Tavily `/search` request and normalize its results."""
 
-        payload = json.dumps(
-            {
-                "query": query,
-                "search_depth": search_depth,
-                "max_results": max_results,
-                "include_raw_content": True,
-            }
-        ).encode("utf-8")
+        request_body: dict[str, Any] = {
+            "query": query,
+            "search_depth": search_depth,
+            "max_results": max_results,
+            "include_raw_content": True,
+        }
+        if self.include_domains:
+            request_body["include_domains"] = list(self.include_domains)
+        payload = json.dumps(request_body).encode("utf-8")
         request = Request(
             "https://api.tavily.com/search",
             data=payload,
@@ -115,8 +118,10 @@ class TavilySearchProvider:
                         "The Tavily API key was rejected."
                     ) from exc
                 if exc.code == 400:
+                    detail = self._error_detail(exc)
                     raise SearchProviderError(
-                        "Tavily rejected the search request."
+                        "Tavily rejected the search request"
+                        f"{f': {detail}' if detail else '.'}"
                     ) from exc
                 last_error = exc
                 if exc.code != 429 and exc.code < 500:
@@ -145,6 +150,21 @@ class TavilySearchProvider:
             content=item.get("raw_content"),
             score=max(0.0, min(1.0, float(item.get("score") or 0.0))),
         )
+
+    @staticmethod
+    def _error_detail(error: HTTPError) -> str:
+        """Return a bounded provider explanation without credential data."""
+
+        try:
+            payload = json.loads(error.read().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        detail = payload.get("detail") or payload.get("message") or payload.get("error")
+        if isinstance(detail, dict):
+            detail = detail.get("message") or detail.get("detail")
+        return " ".join(str(detail or "").split())[:240]
 
 
 class MockSearchProvider:

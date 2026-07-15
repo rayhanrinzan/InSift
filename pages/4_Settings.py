@@ -66,19 +66,13 @@ def main() -> None:
 
     section_header(
         "Provider readiness",
-        "Live discovery requires OpenAI, embeddings, and Tavily. Reddit intake is optional.",
+        "Discovery uses local analysis and public community APIs when paid providers are unavailable.",
     )
     live_extraction_ready = bool(
-        not settings.demo_mode
-        and (settings.llm_provider or "").lower() == "openai"
-        and settings.llm_api_key
+        not settings.demo_mode and settings.discovery_ready
     )
     live_embedding_ready = bool(not settings.demo_mode and settings.embedding_ready)
-    live_search_ready = bool(
-        not settings.demo_mode
-        and (settings.search_provider or "").lower() == "tavily"
-        and settings.search_api_key
-    )
+    live_search_ready = settings.public_search_ready
     llm, embeddings, search, reddit = st.columns(4)
     with llm:
         _provider_status("Extraction", live_extraction_ready)
@@ -118,8 +112,8 @@ def main() -> None:
         first, second = st.columns(2)
         llm_provider = first.selectbox(
             "LLM provider",
-            ["openai", "mock"],
-            index=_index(["openai", "mock"], settings.llm_provider),
+            ["local", "openai", "mock"],
+            index=_index(["local", "openai", "mock"], settings.llm_provider),
         )
         llm_model = second.text_input("LLM model", value=settings.llm_model)
         llm_api_key = first.text_input(
@@ -127,7 +121,7 @@ def main() -> None:
             type="password",
             placeholder="Configured"
             if settings.llm_api_key
-            else "Required for live mode",
+            else "Optional; local analysis remains available",
         )
         clear_llm_key = second.checkbox("Clear stored OpenAI key")
 
@@ -146,15 +140,17 @@ def main() -> None:
         )
         search_provider = first.selectbox(
             "Search provider",
-            ["tavily", "mock"],
-            index=_index(["tavily", "mock"], settings.search_provider),
+            ["community", "tavily", "mock"],
+            index=_index(
+                ["community", "tavily", "mock"], settings.search_provider
+            ),
         )
         search_api_key = second.text_input(
             "Tavily API key",
             type="password",
             placeholder="Configured"
             if settings.search_api_key
-            else "Required for live mode",
+            else "Optional; community search remains available",
         )
         clear_search_key = second.checkbox("Clear stored Tavily key")
 
