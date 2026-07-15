@@ -43,13 +43,7 @@ def _render_rows(rows: tuple[RankedOpportunity, ...]) -> None:
         for column, row in zip(columns, rows[index : index + 2]):
             with column:
                 with st.container(border=True):
-                    if st.button(
-                        row.title,
-                        key=f"open-{row.cluster_id}",
-                        use_container_width=True,
-                    ):
-                        st.session_state["selected_cluster_id"] = row.cluster_id
-                        st.switch_page("pages/3_Opportunity_Details.py")
+                    st.subheader(row.title)
                     st.caption(
                         f"{row.target_customer or 'Target customer not established'} | "
                         f"{row.independent_source_count} independent source(s) | "
@@ -60,7 +54,7 @@ def _render_rows(rows: tuple[RankedOpportunity, ...]) -> None:
                         if row.pipeline_stage == "candidate"
                         else "Confirmed opportunity"
                     )
-                    state, updated = st.columns([1, 2])
+                    state, market = st.columns(2)
                     state.markdown(
                         status_badge_html(
                             stage_label,
@@ -68,7 +62,17 @@ def _render_rows(rows: tuple[RankedOpportunity, ...]) -> None:
                         ),
                         unsafe_allow_html=True,
                     )
-                    updated.caption(f"Updated {format_datetime(row.last_updated)}")
+                    market.markdown(
+                        status_badge_html(
+                            row.market_check_label,
+                            row.market_check_tone,
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("**What this means**")
+                    st.write(row.problem_summary)
+                    st.markdown("**Product to test**")
+                    st.write(row.product_hypothesis)
                     left, right = st.columns(2)
                     left.markdown(
                         score_bar_html("Problem", row.problem_score),
@@ -86,6 +90,15 @@ def _render_rows(rows: tuple[RankedOpportunity, ...]) -> None:
                         score_bar_html("Confidence", row.confidence_score),
                         unsafe_allow_html=True,
                     )
+                    st.caption(f"Updated {format_datetime(row.last_updated)}")
+                    if st.button(
+                        "Open product brief",
+                        key=f"open-{row.cluster_id}",
+                        icon=":material/arrow_forward:",
+                        use_container_width=True,
+                    ):
+                        st.session_state["selected_cluster_id"] = row.cluster_id
+                        st.switch_page("pages/3_Opportunity_Details.py")
 
 
 def main() -> None:

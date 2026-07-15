@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from src.database.models import OpportunityCluster
+from src.services.opportunity_brief_service import opportunity_workflow
 
 
 def _compact(value: str, word_limit: int = 12) -> str:
@@ -12,25 +13,30 @@ def _compact(value: str, word_limit: int = 12) -> str:
     return " ".join(words[:word_limit])
 
 
+def _search_category(workflow: str) -> str:
+    cleaned = workflow.replace("-", " ")
+    cleaned = re.sub(r"\b(?:communication|coordination)\b", " ", cleaned)
+    return " ".join(cleaned.split()) or workflow
+
+
 def generate_competitor_queries(cluster: OpportunityCluster) -> list[str]:
     """Generate exact-workflow, customer, substitute, and directory queries."""
 
-    problem = _compact(cluster.problem_summary)
     customer = _compact(cluster.target_customer or "affected teams", word_limit=7)
     workaround = _compact(cluster.current_workaround or "manual workflow", word_limit=8)
-    workflow = _compact(cluster.title, word_limit=9)
+    workflow = _compact(
+        opportunity_workflow(cluster).replace("-", " "),
+        word_limit=9,
+    )
+    category = _search_category(workflow)
     candidates = [
-        f"software for {problem}",
-        f"{customer} {workflow} automation",
-        f"{problem} SaaS",
-        f"alternative to {workaround}",
-        f"{customer} software {problem}",
-        f"{workflow} tools and platforms",
-        f"site:producthunt.com {workflow}",
-        f"site:ycombinator.com/companies {workflow}",
-        f"site:g2.com {workflow}",
-        f"site:capterra.com {workflow}",
-        f"site:github.com {workflow}",
+        f'"{category}" software for "{customer}"',
+        f'"{workflow}" automation "{customer}"',
+        f'"{category}" workflow software',
+        f'"{workflow}" alternative to "{workaround}"',
+        f'site:producthunt.com/products "{category}"',
+        f'site:g2.com/products "{category}"',
+        f'site:capterra.com/p "{category}"',
     ]
     seen: set[str] = set()
     queries: list[str] = []

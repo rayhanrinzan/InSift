@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import re
+from html import escape
 from typing import Any
 
 import streamlit as st
@@ -30,11 +32,14 @@ from src.ingestion.source_urls import is_placeholder_source_url, source_identity
 from src.research.competitor_search import SearchProviderError
 from src.scoring.opportunity_score import OpportunityScorer
 from src.services.correction_service import build_correction_service
+from src.services.opportunity_brief_service import (
+    OpportunityBrief,
+    build_opportunity_brief,
+)
 from src.services.research_service import build_research_service
 from src.ui.components import (
     configure_page,
     empty_state,
-    fact_block_html,
     page_header,
     page_size_control,
     paginate_items,
@@ -50,6 +55,15 @@ from src.ui.components import (
 from src.ui.data import clear_ui_data_caches, get_ui_session_factory
 from src.ui.formatting import format_datetime, format_score
 from src.ui.navigation import render_page_link
+
+
+def _plain_summary(value: str | None, fallback: str, limit: int = 320) -> str:
+    cleaned = re.sub(r"#{1,6}\s*", "", value or "")
+    cleaned = re.sub(r"[*_`]+", "", cleaned)
+    cleaned = " ".join(cleaned.split()) or fallback
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 3].rsplit(" ", 1)[0] + "..."
+    return escape(cleaned)
 
 
 EXPLANATION_LABELS = {
@@ -116,6 +130,7 @@ def _render_overview(
     cluster: OpportunityCluster,
     score: OpportunityScore | None,
 ) -> None:
+    brief = build_opportunity_brief(cluster)
     is_candidate = cluster.independent_source_count < 2
     state, updated = st.columns([3, 1])
     state.markdown(
@@ -126,29 +141,73 @@ def _render_overview(
         unsafe_allow_html=True,
     )
     updated.caption(f"Updated {format_datetime(cluster.updated_at)}")
-    st.write(cluster.problem_summary)
     if is_candidate:
         st.warning(
-            "This signal has one independent source. It is visible across the product, "
-            "but needs one more matching discussion before FlowSift AI treats it as a "
-            "confirmed opportunity."
+            "Early signal: only one independent source supports this problem. Use the "
+            "brief to plan validation, but do not treat the product direction as proven."
         )
 
-    target, workaround, solution = st.columns(3)
-    target.markdown(
-        fact_block_html("Target user", cluster.target_customer, "Not established"),
-        unsafe_allow_html=True,
+    section_header(
+        "Problem, in plain English",
+        "What is happening, who experiences it, and why it matters.",
     )
-    workaround.markdown(
-        fact_block_html(
-            "Current workaround", cluster.current_workaround, "Not established"
-        ),
-        unsafe_allow_html=True,
+    st.write(brief.plain_english)
+    target, workaround, evidence = st.columns(3)
+    target.markdown("**Who has this problem**")
+    target.write(brief.core_user)
+    workaround.markdown("**What they use today**")
+    workaround.write(brief.current_workaround)
+    evidence.markdown("**Evidence strength**")
+    evidence.write(brief.evidence_strength)
+    st.info(brief.business_impact)
+
+    _render_market_assessment(brief)
+
+    section_header(
+        "Product to test",
+        "A narrow hypothesis that directly addresses the documented workflow.",
     )
-    solution.markdown(
-        fact_block_html("Proposed MVP", cluster.proposed_solution, "Not generated"),
-        unsafe_allow_html=True,
+    st.write(brief.product_hypothesis)
+    st.markdown("**Core user flow**")
+    for index, step in enumerate(brief.core_workflow, start=1):
+        st.write(f"{index}. {step}")
+
+    section_header(
+        "MVP scope",
+        "Only the capabilities needed to prove the workflow and outcome.",
     )
+    for index in range(0, len(brief.mvp_features), 2):
+        columns = st.columns(2)
+        for column, feature in zip(columns, brief.mvp_features[index : index + 2]):
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"**{feature.name}**")
+                    st.write(feature.purpose)
+
+    section_header(
+        "Four-week validation and build plan",
+        "Validate demand before investing in a broad product.",
+    )
+    for phase in brief.build_phases:
+        with st.container(border=True):
+            phase_label, phase_title = st.columns([1, 4])
+            phase_label.markdown(
+                status_badge_html(phase.week, "neutral"),
+                unsafe_allow_html=True,
+            )
+            phase_title.markdown(f"**{phase.title}**")
+            for action in phase.actions:
+                st.write(f"- {action}")
+            st.caption(f"Exit criteria: {phase.exit_criteria}")
+
+    section_header("Build boundaries", "What to implement first and what to delay.")
+    with st.expander("Technical starting point", expanded=True):
+        for step in brief.technical_start:
+            st.write(f"- {step}")
+    with st.expander("Do not build yet"):
+        for item in brief.excluded_scope:
+            st.write(f"- {item}")
+    st.success(f"Pilot success threshold: {brief.success_metric}")
 
     section_header("Scorecard", "Quality and confidence are evaluated separately.")
     if score is None:
@@ -179,10 +238,37 @@ def _render_overview(
                 "evidence before treating the ranking as reliable."
             )
 
-    section_header("Decision risks")
-    st.info(
-        "Evidence coverage, search coverage, classification confidence, build feasibility, "
-        "and customer access still require human validation."
+
+def _render_market_assessment(brief: OpportunityBrief) -> None:
+    """Show the market verdict before recommending product work."""
+
+    competition = brief.competition
+    section_header(
+        "Existing-solution check",
+        "Direct products, adjacent products, and current substitutes.",
+    )
+    st.markdown(
+        status_badge_html(competition.label, competition.tone),
+        unsafe_allow_html=True,
+    )
+    st.write(competition.summary)
+    if competition.status == "required":
+        st.warning(competition.recommendation)
+    elif competition.tone == "risk":
+        st.error(competition.recommendation)
+    else:
+        st.info(competition.recommendation)
+    direct, adjacent, substitutes = st.columns(3)
+    direct.metric("Direct", competition.direct_count)
+    adjacent.metric("Adjacent", competition.adjacent_count)
+    substitutes.metric("Substitutes", competition.substitute_count)
+    if competition.gaps:
+        st.markdown("**Gaps supported by research**")
+        for gap in competition.gaps:
+            st.write(f"- {gap}")
+    st.caption(
+        "A web search can find evidence of existing solutions, but it cannot prove that "
+        "no solution exists. Customer interviews must confirm why current options fail."
     )
 
 
@@ -255,8 +341,8 @@ def _render_competitors(cluster: OpportunityCluster) -> None:
     ]
     if not visible:
         empty_state(
-            "No competitor research yet",
-            "Run competitor research to map direct, adjacent, and substitute products.",
+            "No existing-solution check yet",
+            "Run the market check to map direct products, adjacent products, and substitutes before building.",
         )
         return
 
@@ -290,10 +376,14 @@ def _render_competitors(cluster: OpportunityCluster) -> None:
             )
             problem, gap = st.columns(2)
             problem.markdown(
-                f"**Problem solved**  \n{competitor.problem_solved or 'Unknown problem'}"
+                "<p><strong>Problem solved</strong><br>"
+                f"{_plain_summary(competitor.problem_solved, 'Unknown problem')}</p>",
+                unsafe_allow_html=True,
             )
             gap.markdown(
-                f"**Supported gap**  \n{competitor.possible_gap or 'No supported gap yet'}"
+                "<p><strong>Supported gap</strong><br>"
+                f"{_plain_summary(competitor.possible_gap, 'No supported gap yet')}</p>",
+                unsafe_allow_html=True,
             )
             if competitor.weaknesses:
                 st.caption("Weaknesses: " + ", ".join(competitor.weaknesses))
@@ -538,9 +628,9 @@ def main() -> None:
     settings = get_settings()
     configure_page("Opportunity details", settings)
     page_header(
-        "Opportunity details",
-        "Inspect the evidence, market context, score logic, and correction history.",
-        eyebrow="Opportunity analysis",
+        "Product opportunity brief",
+        "Understand the problem, check existing solutions, and follow a validation-first build plan.",
+        eyebrow="Problem to product",
     )
     render_flash()
     SessionFactory = get_ui_session_factory(settings.database_url)
@@ -573,10 +663,15 @@ def main() -> None:
             ),
         )
         st.session_state["selected_cluster_id"] = selected_id
+        selected_preview = next(
+            cluster for cluster in clusters if cluster.id == selected_id
+        )
 
-        recompute, research = st.columns(2)
+        research, recompute = st.columns([2, 1])
         if recompute.button(
-            "Recompute scores", type="primary", use_container_width=True
+            "Refresh scores",
+            icon=":material/refresh:",
+            use_container_width=True,
         ):
             with st.status("Recomputing scores", expanded=True) as status:
                 status.write("Loading evidence and competitor inputs")
@@ -589,14 +684,16 @@ def main() -> None:
             set_flash("Scores recomputed from the latest stored evidence.")
             st.rerun()
 
-        research_ready = bool(
-            not settings.demo_mode
-            and (settings.search_provider or "").lower() == "tavily"
-            and settings.search_api_key
-            and settings.llm_ready
+        research_ready = settings.research_ready
+        research_label = (
+            "Refresh existing-solution check"
+            if selected_preview.status == "researched"
+            else "Check existing solutions"
         )
         if research.button(
-            "Research competitors",
+            research_label,
+            type="primary",
+            icon=":material/manage_search:",
             use_container_width=True,
             disabled=not research_ready,
         ):
@@ -620,13 +717,14 @@ def main() -> None:
                     expanded=False,
                 )
             set_flash(
-                f"Ran {len(outcome.queries)} queries and stored "
-                f"{len(outcome.competitors)} relevant competitor(s)."
+                f"Checked {len(outcome.queries)} market searches and stored "
+                f"{len(outcome.competitors)} relevant existing solution(s)."
             )
             st.rerun()
         if not research_ready:
             research.info(
-                "Configure OpenAI and Tavily in Settings to run live research."
+                "Configure Tavily in Settings to check existing solutions. The "
+                "product plan remains provisional until this check runs."
             )
 
         with SessionFactory() as session:
@@ -657,7 +755,14 @@ def main() -> None:
             correction_tab,
             history_tab,
         ) = st.tabs(
-            ["Overview", "Evidence", "Competitors", "Scoring", "Corrections", "History"]
+            [
+                "Product brief",
+                "Evidence",
+                "Existing solutions",
+                "Scoring",
+                "Corrections",
+                "History",
+            ]
         )
         with overview_tab:
             _render_overview(cluster, latest_score)

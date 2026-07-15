@@ -27,8 +27,20 @@ def extract_product_fields(result: SearchResult) -> dict[str, object]:
 
     metadata = result.metadata
     host = urlsplit(result.url).netloc.removeprefix("www.").split(":", 1)[0]
-    inferred_company = host.split(".")[0].replace("-", " ").title() if host else None
-    product_name = metadata.get("product_name") or re.split(r"\s+[|:-]\s+", result.title)[0]
+    host_parts = host.split(".")
+    company_slug = (
+        host_parts[-2] if len(host_parts) >= 2 else (host_parts[0] if host else "")
+    )
+    inferred_company = company_slug.replace("-", " ").title() or None
+    title_name = re.split(
+        r"\s+(?:Reviews?|Pros and Cons|Software Pricing|Pricing|Alternatives)\b|\s*[|:]\s*|\s+-\s+",
+        result.title,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
+    if len(title_name.split()) > 8 and inferred_company:
+        title_name = inferred_company
+    product_name = metadata.get("product_name") or title_name or inferred_company
     searchable = f"{result.title} {result.snippet} {result.content or ''}".lower()
     features = metadata.get("features") or [
         feature for feature in KNOWN_FEATURES if feature in searchable

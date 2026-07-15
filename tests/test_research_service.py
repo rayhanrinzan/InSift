@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from src.database.repositories import (
     ClusterRepository,
+    CompetitorRepository,
     EvidenceRepository,
     ResearchRepository,
 )
@@ -45,16 +46,25 @@ def _cluster(session: Session):
 def test_query_generation_is_broad_and_deduplicated(db_session: Session) -> None:
     queries = generate_competitor_queries(_cluster(db_session))
 
+    assert len(queries) == 7
     assert len(queries) == len({query.casefold() for query in queries})
     assert any("site:producthunt.com" in query for query in queries)
     assert any("site:g2.com" in query for query in queries)
     assert any("alternative to" in query for query in queries)
+    assert all("patient referral follow up" in query for query in queries)
 
 
 def test_demo_research_persists_queries_and_filters_irrelevant_results(
     db_session: Session,
 ) -> None:
     cluster = _cluster(db_session)
+    stale = CompetitorRepository(db_session).create(
+        cluster_id=cluster.id,
+        company_name="Old roundup",
+        product_name="Ten best referral tools",
+        url="https://content.example/blog/best-referral-tools",
+        relationship_type="direct",
+    )
     progress_updates: list[tuple[float, str]] = []
     outcome = ResearchService(
         db_session,
@@ -76,6 +86,9 @@ def test_demo_research_persists_queries_and_filters_irrelevant_results(
     assert outcome.irrelevant_result_count >= 1
     assert all(item.relationship_type != "irrelevant" for item in outcome.competitors)
     assert len(urls) == len(set(urls))
+    assert stale.id not in {item.id for item in outcome.competitors}
+    assert CompetitorRepository(db_session).get(stale.id) is None
+    assert len(outcome.competitors) <= 12
     assert (
         canonical_url("https://www.airtable.com/?utm_source=test")
         == "https://airtable.com"

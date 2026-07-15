@@ -14,6 +14,7 @@ from src.database.models import (
 )
 from src.database.repositories import ClusterRepository, EvidenceRepository
 from src.ingestion.source_urls import is_placeholder_source_url
+from src.services.opportunity_brief_service import build_opportunity_brief
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,8 @@ class RankedOpportunity:
 
     cluster_id: str
     title: str
+    problem_summary: str
+    product_hypothesis: str
     target_customer: Optional[str]
     evidence_count: int
     independent_source_count: int
@@ -43,6 +46,9 @@ class RankedOpportunity:
     pain_types: tuple[str, ...]
     pipeline_stage: str
     research_status: str
+    market_check_status: str
+    market_check_label: str
+    market_check_tone: str
     last_updated: Optional[datetime]
 
 
@@ -73,6 +79,7 @@ class OpportunityService:
         rows: list[RankedOpportunity] = []
         clusters = ClusterRepository(self.session).list_pipeline(limit=limit)
         for cluster in clusters:
+            brief = build_opportunity_brief(cluster)
             evidence_items = [
                 link.evidence_item
                 for link in cluster.evidence_links
@@ -88,6 +95,8 @@ class OpportunityService:
                 RankedOpportunity(
                     cluster_id=cluster.id,
                     title=cluster.title,
+                    problem_summary=brief.problem_statement,
+                    product_hypothesis=brief.product_hypothesis,
                     target_customer=cluster.target_customer,
                     evidence_count=len({item.id for item in evidence_items}),
                     independent_source_count=cluster.independent_source_count,
@@ -117,6 +126,9 @@ class OpportunityService:
                         else "confirmed"
                     ),
                     research_status=cluster.status,
+                    market_check_status=brief.competition.status,
+                    market_check_label=brief.competition.label,
+                    market_check_tone=brief.competition.tone,
                     last_updated=cluster.updated_at,
                 )
             )

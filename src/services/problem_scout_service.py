@@ -22,6 +22,7 @@ from src.ingestion.web import (
 from src.research.competitor_search import SearchProvider, canonical_url
 from src.research.public_discussion_search import is_supported_discussion_url
 from src.services.discovery_service import DiscoveryResult, DiscoveryService
+from src.services.opportunity_brief_service import build_opportunity_brief
 
 
 SCOUT_FOCUS_LABELS: dict[str, str] = {
@@ -32,6 +33,7 @@ SCOUT_FOCUS_LABELS: dict[str, str] = {
     "commerce": "Commerce & supply chain",
     "people_ops": "Hiring & workplace operations",
 }
+
 
 class LiveScoutConfigurationError(IngestionError):
     """Raised when a non-live provider is used for public-source discovery."""
@@ -155,7 +157,12 @@ SCOUT_RELEVANCE_TERMS: dict[str, tuple[str, ...]] = {
     "marketing-agencies": ("marketing agency", "agency owner", "client campaign"),
     "construction-teams": ("construction", "contractor", "subcontractor", "jobsite"),
     "distributors": ("distributor", "wholesale", "warehouse", "inventory"),
-    "small-hr-teams": ("hr manager", "human resources", "people operations", "employee"),
+    "small-hr-teams": (
+        "hr manager",
+        "human resources",
+        "people operations",
+        "employee",
+    ),
     "insurance-brokers": (
         "insurance broker",
         "insurance agency",
@@ -494,9 +501,7 @@ def build_problem_query(
     """Build a rotating natural-language query for first-hand workflow pain."""
 
     topic = _workflow_topic(segment, scan_round=scan_round, attempt=attempt)
-    lens = SCOUT_SEARCH_LENSES[
-        ((scan_round * 2) + attempt) % len(SCOUT_SEARCH_LENSES)
-    ]
+    lens = SCOUT_SEARCH_LENSES[((scan_round * 2) + attempt) % len(SCOUT_SEARCH_LENSES)]
     query = f"{SCOUT_QUERY_ANCHORS[segment.key]} {topic} {lens} reddit"
     return " ".join(query.split())
 
@@ -550,10 +555,7 @@ def _is_scoutable_discussion(evidence: WebEvidenceCandidate) -> bool:
     title = evidence.title.lower()
     if "/compare/" in path:
         return False
-    return not (
-        title.startswith("compare ")
-        or "pricing, alternatives & more" in title
-    )
+    return not (title.startswith("compare ") or "pricing, alternatives & more" in title)
 
 
 def _contains_first_hand_problem(evidence: WebEvidenceCandidate) -> bool:
@@ -563,8 +565,7 @@ def _contains_first_hand_problem(evidence: WebEvidenceCandidate) -> bool:
     if any(marker in padded for marker in SOLICITATION_MARKERS):
         return False
     sentences = [
-        f" {sentence.strip()} "
-        for sentence in re.split(r"(?<=[.!?])\s+|\n+", padded)
+        f" {sentence.strip()} " for sentence in re.split(r"(?<=[.!?])\s+|\n+", padded)
     ]
     same_sentence_signal = any(
         any(subject in sentence for subject in FIRST_HAND_MARKERS)
@@ -618,7 +619,9 @@ class ProblemScoutService:
         """Run one complete search-to-database discovery cycle."""
 
         if not 1 <= results_per_segment <= 10:
-            raise IngestionError("Results per customer segment must be between 1 and 10.")
+            raise IngestionError(
+                "Results per customer segment must be between 1 and 10."
+            )
         segments = select_customer_segments(
             focus,
             limit=segment_limit,
@@ -804,6 +807,7 @@ class ProblemScoutService:
             cluster.title = (
                 f"{cleaned[:87].rstrip()}..." if len(cleaned) > 90 else cleaned
             )
+        cluster.proposed_solution = build_opportunity_brief(cluster).product_hypothesis
 
     def _promote_opportunities(
         self,
@@ -816,8 +820,7 @@ class ProblemScoutService:
             cluster = self.clusters.get(cluster_id)
             if (
                 cluster is not None
-                and cluster.independent_source_count
-                >= self.minimum_independent_sources
+                and cluster.independent_source_count >= self.minimum_independent_sources
             ):
                 eligible.append(cluster)
 
@@ -909,9 +912,7 @@ class ProblemScoutService:
             )
 
         problem_score = float(
-            (score.explanation_json or {})
-            .get("problem_score", {})
-            .get("score", 0.0)
+            (score.explanation_json or {}).get("problem_score", {}).get("score", 0.0)
         )
         return DiscoveredOpportunity(
             cluster_id=cluster.id,

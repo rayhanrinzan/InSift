@@ -19,6 +19,8 @@ from src.logging_config import log_event
 from src.research.competitor_classifier import (
     CompetitorClassificationProvider,
     build_competitor_classifier,
+    is_product_candidate,
+    product_identity,
 )
 from src.research.competitor_search import (
     SearchAuthenticationError,
@@ -161,6 +163,9 @@ class ResearchService:
         persisted: list[Competitor] = []
         irrelevant_count = 0
         existing_records = self.competitors.list_for_cluster(cluster_id)
+        seen_products: set[str] = set()
+        relationship_counts = {"direct": 0, "adjacent": 0, "substitute": 0}
+        relationship_limits = {"direct": 4, "adjacent": 5, "substitute": 3}
         for result_index, (url, (result, source_queries)) in enumerate(
             unique_results.items()
         ):
@@ -172,6 +177,9 @@ class ResearchService:
                 classification_progress,
                 f"Classifying result {result_index + 1} of {len(unique_results)}",
             )
+            if not is_product_candidate(result):
+                irrelevant_count += 1
+                continue
             classification = self.classifier.classify(context, result)
             log_event(
                 logger,
@@ -187,6 +195,17 @@ class ResearchService:
             if classification.relationship_type == "irrelevant":
                 irrelevant_count += 1
                 continue
+            identity = product_identity(classification, url)
+            relationship = classification.relationship_type
+            if (
+                identity in seen_products
+                or relationship_counts[relationship]
+                >= relationship_limits[relationship]
+            ):
+                irrelevant_count += 1
+                continue
+            seen_products.add(identity)
+            relationship_counts[relationship] += 1
             existing = next(
                 (
                     item
@@ -248,6 +267,13 @@ class ResearchService:
                     existing.source_evidence["user_corrected_relationship"] = True
                 stored = self.competitors.save(existing)
             persisted.append(stored)
+
+        if failed_queries < len(query_records):
+            self.competitors.delete_stale_for_cluster(
+                cluster_id,
+                keep_ids={item.id for item in persisted},
+            )
+            self.session.expire_all()
 
         run_error = permanent_error
         finished_run = self.research.finish_run(

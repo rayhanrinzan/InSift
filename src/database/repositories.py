@@ -59,7 +59,9 @@ class EvidenceRepository:
 
         statement: Select[tuple[EvidenceItem]] = select(EvidenceItem)
         if source_external_id:
-            statement = statement.where(EvidenceItem.source_external_id == source_external_id)
+            statement = statement.where(
+                EvidenceItem.source_external_id == source_external_id
+            )
         elif source_url:
             statement = statement.where(EvidenceItem.source_url == source_url)
         else:
@@ -70,9 +72,7 @@ class EvidenceRepository:
         """Return recent evidence items."""
 
         statement = (
-            select(EvidenceItem)
-            .order_by(EvidenceItem.collected_at.desc())
-            .limit(limit)
+            select(EvidenceItem).order_by(EvidenceItem.collected_at.desc()).limit(limit)
         )
         return list(self.session.execute(statement).scalars())
 
@@ -105,9 +105,7 @@ class EvidenceRepository:
         statement = select(EvidenceItem).order_by(EvidenceItem.collected_at.desc())
         items = self.session.execute(statement).scalars()
         return [
-            item
-            for item in items
-            if not is_placeholder_source_url(item.source_url)
+            item for item in items if not is_placeholder_source_url(item.source_url)
         ][:limit]
 
     def count_visible(self) -> int:
@@ -340,7 +338,9 @@ class ClusterRepository:
                 for item in evidence_items
             }
         )
-        collected_dates = [item.collected_at for item in evidence_items if item.collected_at]
+        collected_dates = [
+            item.collected_at for item in evidence_items if item.collected_at
+        ]
         if collected_dates:
             cluster.first_seen_at = min(collected_dates)
             cluster.last_seen_at = max(collected_dates)
@@ -397,8 +397,32 @@ class CompetitorRepository:
     def count_for_cluster(self, cluster_id: str) -> int:
         """Return competitor count for a cluster."""
 
-        statement = select(func.count(Competitor.id)).where(Competitor.cluster_id == cluster_id)
+        statement = select(func.count(Competitor.id)).where(
+            Competitor.cluster_id == cluster_id
+        )
         return int(self.session.scalar(statement) or 0)
+
+    def delete_stale_for_cluster(
+        self,
+        cluster_id: str,
+        *,
+        keep_ids: set[str],
+    ) -> int:
+        """Remove old generated results while preserving user-corrected records."""
+
+        deleted = 0
+        for competitor in self.list_for_cluster(cluster_id):
+            if competitor.id in keep_ids:
+                continue
+            if (competitor.source_evidence or {}).get(
+                "user_corrected_relationship", False
+            ):
+                continue
+            self.session.delete(competitor)
+            deleted += 1
+        if deleted:
+            self.session.commit()
+        return deleted
 
 
 class ScoreRepository:
@@ -464,7 +488,9 @@ class FeedbackRepository:
     def list_recent(self, limit: int = 100) -> list[UserFeedback]:
         """Return recent correction history across entity types."""
 
-        statement = select(UserFeedback).order_by(UserFeedback.created_at.desc()).limit(limit)
+        statement = (
+            select(UserFeedback).order_by(UserFeedback.created_at.desc()).limit(limit)
+        )
         return list(self.session.execute(statement).scalars())
 
 
@@ -515,7 +541,9 @@ class ResearchRepository:
         query.result_count = result_count
         query.error_message = error_message
         query.status = (
-            ResearchStatus.FAILED.value if error_message else ResearchStatus.COMPLETED.value
+            ResearchStatus.FAILED.value
+            if error_message
+            else ResearchStatus.COMPLETED.value
         )
         query.completed_at = utc_now()
         self.session.add(query)
