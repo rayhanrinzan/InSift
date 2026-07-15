@@ -21,7 +21,6 @@ from src.ui.components import (
     page_size_control,
     paginate_items,
     render_database_error,
-    render_page_link,
     render_pagination,
     status_badge_html,
 )
@@ -32,6 +31,7 @@ from src.ui.data import (
     load_evidence_review,
 )
 from src.ui.formatting import format_datetime, format_score
+from src.ui.navigation import render_page_link
 
 
 def _render_result(result: DiscoveryResult) -> None:
