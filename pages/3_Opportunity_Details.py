@@ -30,7 +30,6 @@ from src.ui.components import (
     page_size_control,
     paginate_items,
     render_database_error,
-    render_page_link,
     render_flash,
     render_pagination,
     score_tone,
@@ -39,6 +38,7 @@ from src.ui.components import (
 )
 from src.ui.data import clear_ui_data_caches, get_ui_session_factory
 from src.ui.formatting import format_datetime, format_score
+from src.ui.navigation import render_page_link
 
 
 EXPLANATION_LABELS = {
