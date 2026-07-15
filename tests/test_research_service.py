@@ -55,12 +55,18 @@ def test_demo_research_persists_queries_and_filters_irrelevant_results(
     db_session: Session,
 ) -> None:
     cluster = _cluster(db_session)
+    progress_updates: list[tuple[float, str]] = []
     outcome = ResearchService(
         db_session,
         MockSearchProvider(),
         CompetitorClassifier(),
         max_results=10,
-    ).research_cluster(cluster.id)
+    ).research_cluster(
+        cluster.id,
+        progress_callback=lambda value, message: progress_updates.append(
+            (value, message)
+        ),
+    )
 
     stored_queries = ResearchRepository(db_session).list_queries_for_cluster(cluster.id)
     urls = [item.url for item in outcome.competitors]
@@ -70,6 +76,14 @@ def test_demo_research_persists_queries_and_filters_irrelevant_results(
     assert outcome.irrelevant_result_count >= 1
     assert all(item.relationship_type != "irrelevant" for item in outcome.competitors)
     assert len(urls) == len(set(urls))
-    assert canonical_url("https://www.airtable.com/?utm_source=test") == "https://airtable.com"
+    assert (
+        canonical_url("https://www.airtable.com/?utm_source=test")
+        == "https://airtable.com"
+    )
     assert outcome.score is not None
     assert "unmet_customer_need" in outcome.score.explanation_json
+    assert progress_updates[0][0] > 0
+    assert progress_updates[-1] == (1.0, "Competitor research complete")
+    assert [value for value, _ in progress_updates] == sorted(
+        value for value, _ in progress_updates
+    )

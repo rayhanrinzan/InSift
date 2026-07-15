@@ -8,6 +8,7 @@ import re
 from typing import Protocol
 
 from src.config import Settings
+from src.providers.openai import OpenAIClient, OpenAIProviderError
 
 
 class EmbeddingError(RuntimeError):
@@ -60,9 +61,39 @@ CONCEPT_GROUPS: tuple[tuple[str, ...], ...] = (
 )
 
 STOP_WORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "because", "but", "by", "for",
-    "from", "has", "have", "i", "in", "is", "it", "of", "on", "or", "our", "that",
-    "the", "their", "this", "to", "use", "using", "we", "when", "with", "every",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "because",
+    "but",
+    "by",
+    "for",
+    "from",
+    "has",
+    "have",
+    "i",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "our",
+    "that",
+    "the",
+    "their",
+    "this",
+    "to",
+    "use",
+    "using",
+    "we",
+    "when",
+    "with",
+    "every",
 }
 
 
@@ -131,11 +162,41 @@ class SentenceTransformerEmbeddingProvider:
         return [float(value) for value in vector]
 
 
+class OpenAIEmbeddingProvider:
+    """Create semantic embeddings with the configured OpenAI model."""
+
+    def __init__(self, client: OpenAIClient, model_name: str) -> None:
+        self.client = client
+        self.model_name = model_name
+
+    def embed(self, text: str) -> list[float]:
+        try:
+            return self.client.embedding(text, model=self.model_name)
+        except OpenAIProviderError as exc:
+            raise EmbeddingError(str(exc)) from exc
+
+
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
     """Build the configured provider, using deterministic embeddings in demo mode."""
 
-    if settings.demo_mode or settings.embedding_provider.lower() in {"mock", "deterministic"}:
+    if settings.demo_mode or settings.embedding_provider.lower() in {
+        "mock",
+        "deterministic",
+    }:
         return DeterministicEmbeddingProvider()
     if settings.embedding_provider.lower() == "sentence_transformers":
         return SentenceTransformerEmbeddingProvider(settings.embedding_model)
-    raise EmbeddingError(f"Unsupported embedding provider: {settings.embedding_provider}")
+    if settings.embedding_provider.lower() == "openai":
+        if not settings.llm_api_key:
+            raise EmbeddingError("LLM_API_KEY is required for OpenAI embeddings.")
+        return OpenAIEmbeddingProvider(
+            OpenAIClient(
+                settings.llm_api_key.get_secret_value(),
+                model=settings.llm_model,
+                base_url=settings.openai_base_url,
+            ),
+            settings.embedding_model,
+        )
+    raise EmbeddingError(
+        f"Unsupported embedding provider: {settings.embedding_provider}"
+    )

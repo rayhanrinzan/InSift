@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 from sqlalchemy.orm import Session
 
@@ -15,7 +16,10 @@ from src.database.repositories import (
     ResearchRepository,
 )
 from src.logging_config import log_event
-from src.research.competitor_classifier import CompetitorClassifier
+from src.research.competitor_classifier import (
+    CompetitorClassificationProvider,
+    build_competitor_classifier,
+)
 from src.research.competitor_search import (
     SearchAuthenticationError,
     SearchProvider,
@@ -29,6 +33,8 @@ from src.scoring.opportunity_score import OpportunityScorer
 
 
 logger = logging.getLogger(__name__)
+
+ResearchProgressCallback = Callable[[float, str], None]
 
 
 @dataclass(frozen=True)
@@ -49,7 +55,7 @@ class ResearchService:
         self,
         session: Session,
         provider: SearchProvider,
-        classifier: CompetitorClassifier,
+        classifier: CompetitorClassificationProvider,
         *,
         max_results: int = 10,
         search_depth: str = "basic",
@@ -63,13 +69,23 @@ class ResearchService:
         self.competitors = CompetitorRepository(session)
         self.research = ResearchRepository(session)
 
-    def research_cluster(self, cluster_id: str) -> ResearchOutcome:
+    def research_cluster(
+        self,
+        cluster_id: str,
+        progress_callback: Optional[ResearchProgressCallback] = None,
+    ) -> ResearchOutcome:
         """Run a complete research cycle for one opportunity cluster."""
 
+        self._report_progress(progress_callback, 0.03, "Loading opportunity context")
         cluster = self.clusters.get(cluster_id)
         if cluster is None:
             raise ValueError("Cluster does not exist.")
         generated_queries = generate_competitor_queries(cluster)
+        self._report_progress(
+            progress_callback,
+            0.08,
+            f"Generated {len(generated_queries)} research queries",
+        )
         run = self.research.create_run(cluster_id, self.provider.name)
         query_records = [
             self.research.create_query(run.id, cluster_id, query)
@@ -81,6 +97,12 @@ class ResearchService:
         permanent_error: str | None = None
 
         for index, query_record in enumerate(query_records):
+            query_progress = 0.1 + (0.5 * (index / max(1, len(query_records))))
+            self._report_progress(
+                progress_callback,
+                query_progress,
+                f"Searching query {index + 1} of {len(query_records)}",
+            )
             if permanent_error:
                 self.research.finish_query(
                     query_record,
@@ -123,6 +145,12 @@ class ResearchService:
                     query_record, result_count=0, error_message=str(exc)
                 )
 
+        self._report_progress(
+            progress_callback,
+            0.62,
+            f"Classifying {len(unique_results)} unique search results",
+        )
+
         context = CompetitorResearchContext(
             title=cluster.title,
             problem_summary=cluster.problem_summary,
@@ -133,7 +161,17 @@ class ResearchService:
         persisted: list[Competitor] = []
         irrelevant_count = 0
         existing_records = self.competitors.list_for_cluster(cluster_id)
-        for url, (result, source_queries) in unique_results.items():
+        for result_index, (url, (result, source_queries)) in enumerate(
+            unique_results.items()
+        ):
+            classification_progress = 0.62 + (
+                0.27 * ((result_index + 1) / max(1, len(unique_results)))
+            )
+            self._report_progress(
+                progress_callback,
+                classification_progress,
+                f"Classifying result {result_index + 1} of {len(unique_results)}",
+            )
             classification = self.classifier.classify(context, result)
             log_event(
                 logger,
@@ -157,7 +195,8 @@ class ResearchService:
                     or (
                         item.product_name
                         and classification.product_name
-                        and item.product_name.casefold() == classification.product_name.casefold()
+                        and item.product_name.casefold()
+                        == classification.product_name.casefold()
                     )
                 ),
                 None,
@@ -201,7 +240,9 @@ class ResearchService:
                     if key not in {"cluster_id", "relationship_type"}:
                         setattr(existing, key, value)
                 existing.relationship_type = (
-                    corrected_type if user_corrected else classification.relationship_type
+                    corrected_type
+                    if user_corrected
+                    else classification.relationship_type
                 )
                 if user_corrected:
                     existing.source_evidence["user_corrected_relationship"] = True
@@ -218,6 +259,9 @@ class ResearchService:
             error_message=run_error,
         )
         if failed_queries < len(query_records):
+            self._report_progress(
+                progress_callback, 0.93, "Recomputing researched opportunity scores"
+            )
             cluster.status = "researched"
             self.clusters.save(cluster)
             score = OpportunityScorer(self.session).score_cluster(cluster_id)
@@ -225,6 +269,7 @@ class ResearchService:
             score = None
         if permanent_error:
             raise SearchAuthenticationError(permanent_error)
+        self._report_progress(progress_callback, 1.0, "Competitor research complete")
         return ResearchOutcome(
             run=finished_run,
             queries=query_records,
@@ -233,6 +278,15 @@ class ResearchService:
             score=score,
         )
 
+    @staticmethod
+    def _report_progress(
+        callback: Optional[ResearchProgressCallback],
+        progress: float,
+        message: str,
+    ) -> None:
+        if callback is not None:
+            callback(min(1.0, max(0.0, progress)), message)
+
 
 def build_research_service(session: Session, settings: Settings) -> ResearchService:
     """Build configured research dependencies."""
@@ -240,7 +294,7 @@ def build_research_service(session: Session, settings: Settings) -> ResearchServ
     return ResearchService(
         session,
         build_search_provider(settings),
-        CompetitorClassifier(),
+        build_competitor_classifier(settings),
         max_results=settings.max_search_results,
         search_depth=settings.search_depth,
     )

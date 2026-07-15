@@ -30,3 +30,8 @@ def test_csv_ingestion_supports_text_and_source_fields() -> None:
 def test_csv_without_text_column_is_rejected() -> None:
     with pytest.raises(IngestionError, match="needs one text column"):
         parse_csv_submissions("name,url\nExample,https://example.com\n")
+
+
+def test_oversized_manual_submission_is_rejected() -> None:
+    with pytest.raises(IngestionError, match="50,000 characters"):
+        manual_submission("x" * 50_001)

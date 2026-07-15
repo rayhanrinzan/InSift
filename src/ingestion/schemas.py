@@ -27,6 +27,8 @@ class SourceSubmission(BaseModel):
         cleaned = value.strip()
         if not cleaned:
             raise ValueError("Discussion text cannot be empty.")
+        if len(cleaned) > 50_000:
+            raise ValueError("Discussion text must be 50,000 characters or fewer.")
         return cleaned
 
     @validator("source_url", allow_reuse=True)

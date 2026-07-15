@@ -1,80 +1,102 @@
-"""Sortable and filterable ranked opportunity view."""
+"""Sortable, filterable, and paginated opportunity view."""
 
 from __future__ import annotations
-
-from datetime import date
 
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.config import get_settings
-from src.database.session import create_database_engine, create_session_factory
-from src.services.opportunity_service import OpportunityService, RankedOpportunity
+from src.services.opportunity_service import RankedOpportunity
+from src.ui.components import (
+    configure_page,
+    page_header,
+    page_size_control,
+    paginate_items,
+    render_database_error,
+    render_pagination,
+    score_tone,
+    status_badge_html,
+)
+from src.ui.data import load_ranked_opportunities
 from src.ui.formatting import format_datetime, format_score
 
 
-def _render_rows(rows: list[RankedOpportunity]) -> None:
+def _score_cell(column: object, label: str, value: float | None) -> None:
+    column.markdown(
+        status_badge_html(format_score(value), score_tone(value)),
+        unsafe_allow_html=True,
+    )
+    column.caption(label)
+
+
+def _render_rows(rows: tuple[RankedOpportunity, ...]) -> None:
     if not rows:
         st.info("No opportunities match the current filters.")
         return
-    widths = [2.8, 1.8, 0.8, 0.9, 0.9, 0.9, 0.9, 0.8, 1.2]
-    headers = st.columns(widths)
-    for column, label in zip(
-        headers,
-        (
-            "Opportunity",
-            "Target customer",
-            "Evidence",
-            "Problem",
-            "White-space",
-            "Opportunity",
-            "Confidence",
-            "Competitors",
-            "Updated",
-        ),
-    ):
-        column.markdown(f"**{label}**")
-    st.divider()
+
     for row in rows:
-        columns = st.columns(widths)
-        if columns[0].button(row.title, key=f"open-{row.cluster_id}", use_container_width=True):
-            st.session_state["selected_cluster_id"] = row.cluster_id
-            st.switch_page("pages/3_Opportunity_Details.py")
-        columns[1].write(row.target_customer or "Unknown")
-        columns[2].write(row.evidence_count)
-        columns[3].write(format_score(row.problem_score))
-        columns[4].write(format_score(row.whitespace_score))
-        columns[5].write(format_score(row.opportunity_score))
-        columns[6].write(format_score(row.confidence_score))
-        columns[7].write(row.competitor_count)
-        columns[8].write(format_datetime(row.last_updated))
+        with st.container(border=True):
+            summary, problem, whitespace, opportunity, confidence = st.columns(
+                [3.5, 1, 1, 1, 1]
+            )
+            if summary.button(
+                row.title,
+                key=f"open-{row.cluster_id}",
+                use_container_width=True,
+            ):
+                st.session_state["selected_cluster_id"] = row.cluster_id
+                st.switch_page("pages/3_Opportunity_Details.py")
+            summary.caption(
+                f"{row.target_customer or 'Target customer not established'} | "
+                f"{row.evidence_count} evidence item(s) | "
+                f"{row.competitor_count} competitor(s) | "
+                f"Updated {format_datetime(row.last_updated)}"
+            )
+            summary.markdown(
+                status_badge_html(
+                    row.research_status.replace("_", " ").title(),
+                    "good" if row.research_status == "researched" else "neutral",
+                ),
+                unsafe_allow_html=True,
+            )
+            _score_cell(problem, "Problem", row.problem_score)
+            _score_cell(whitespace, "White-space", row.whitespace_score)
+            _score_cell(opportunity, "Opportunity", row.opportunity_score)
+            _score_cell(confidence, "Confidence", row.confidence_score)
 
 
 def main() -> None:
-    """Render ranked opportunities and filters."""
+    """Render ranked opportunities, filters, sorting, and pagination."""
 
-    st.set_page_config(page_title="InSift Opportunities", page_icon="IS", layout="wide")
-    st.title("Opportunities")
     settings = get_settings()
-    SessionFactory = create_session_factory(create_database_engine(settings))
+    configure_page("Opportunities", settings)
+    page_header(
+        "Opportunities",
+        "Compare ranked problem clusters and open the evidence behind any score.",
+        eyebrow="Ranked market signals",
+    )
     try:
-        with SessionFactory() as session:
-            rows = OpportunityService(session).ranked_opportunities(limit=1000)
+        with st.spinner("Loading ranked opportunities..."):
+            rows = list(load_ranked_opportunities(settings.database_url, limit=1000))
     except SQLAlchemyError:
-        st.error("The opportunity list is unavailable because the database could not be read.")
+        render_database_error("The opportunity list", settings)
         return
 
     with st.expander("Filters", expanded=True):
         first, second, third = st.columns(3)
         minimum_score = first.slider("Minimum opportunity score", 0, 100, 0)
         minimum_confidence = second.slider("Minimum confidence", 0, 100, 0)
-        target_options = sorted({row.target_customer for row in rows if row.target_customer})
+        target_options = sorted(
+            {row.target_customer for row in rows if row.target_customer}
+        )
         target_customer = third.selectbox("Target customer", ["All", *target_options])
         first, second, third = st.columns(3)
         pain_options = sorted({pain for row in rows for pain in row.pain_types})
         pain_type = first.selectbox("Pain type", ["All", *pain_options])
         statuses = sorted({row.research_status for row in rows})
-        selected_statuses = second.multiselect("Research status", statuses, default=statuses)
+        selected_statuses = second.multiselect(
+            "Research status", statuses, default=statuses
+        )
         start_date = third.date_input("Updated on or after", value=None)
 
     filtered = [
@@ -92,23 +114,37 @@ def main() -> None:
         )
     ]
 
-    left, right = st.columns([3, 1])
-    sort_key = left.selectbox(
+    sort_column, direction_column, size_column = st.columns([3, 1, 1])
+    sort_key = sort_column.selectbox(
         "Sort by",
-        ["Opportunity score", "Problem score", "Confidence", "Evidence", "Last updated"],
-        label_visibility="collapsed",
+        [
+            "Opportunity score",
+            "Problem score",
+            "Confidence",
+            "Evidence",
+            "Last updated",
+        ],
     )
-    descending = right.toggle("Descending", value=True)
+    descending = direction_column.toggle("Descending", value=True)
+    with size_column:
+        page_size = page_size_control("opportunities", default=10)
     key_functions = {
         "Opportunity score": lambda row: row.opportunity_score or 0,
         "Problem score": lambda row: row.problem_score or 0,
         "Confidence": lambda row: row.confidence_score or 0,
         "Evidence": lambda row: row.evidence_count,
-        "Last updated": lambda row: row.last_updated.timestamp() if row.last_updated else 0,
+        "Last updated": lambda row: row.last_updated.timestamp()
+        if row.last_updated
+        else 0,
     }
     filtered.sort(key=key_functions[sort_key], reverse=descending)
+
+    page_number = int(st.session_state.get("opportunities-page", 1))
+    page_slice = paginate_items(filtered, page=page_number, page_size=page_size)
     st.caption(f"{len(filtered)} opportunity result(s)")
-    _render_rows(filtered)
+    _render_rows(page_slice.items)
+    if filtered:
+        render_pagination(page_slice, "opportunities")
 
 
 if __name__ == "__main__":

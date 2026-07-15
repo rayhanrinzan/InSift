@@ -11,6 +11,8 @@ dist/
 htmlcov/
 .coverage
 insift.db
+*.db
 *.sqlite
 *.sqlite3
 .DS_Store
+.streamlit/secrets.toml

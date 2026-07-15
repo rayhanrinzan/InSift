@@ -8,18 +8,36 @@ import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.config import get_settings
-from src.database.models import OpportunityCluster, OpportunityScore, SearchQuery, UserFeedback
+from src.database.models import (
+    OpportunityCluster,
+    OpportunityScore,
+    SearchQuery,
+    UserFeedback,
+)
 from src.database.repositories import (
     ClusterRepository,
     FeedbackRepository,
     ResearchRepository,
     ScoreRepository,
 )
-from src.database.session import create_database_engine, create_session_factory
 from src.research.competitor_search import SearchProviderError
 from src.scoring.opportunity_score import OpportunityScorer
 from src.services.correction_service import build_correction_service
 from src.services.research_service import build_research_service
+from src.ui.components import (
+    configure_page,
+    page_header,
+    page_size_control,
+    paginate_items,
+    render_database_error,
+    render_page_link,
+    render_flash,
+    render_pagination,
+    score_tone,
+    set_flash,
+    status_badge_html,
+)
+from src.ui.data import clear_ui_data_caches, get_ui_session_factory
 from src.ui.formatting import format_datetime, format_score
 
 
@@ -58,15 +76,22 @@ RELATIONSHIP_TYPES = ["direct", "adjacent", "substitute", "irrelevant"]
 
 
 def _problem_score(score: OpportunityScore) -> float:
-    return float((score.explanation_json or {}).get("problem_score", {}).get("score", 0.0))
+    return float(
+        (score.explanation_json or {}).get("problem_score", {}).get("score", 0.0)
+    )
 
 
-def _render_explanations(explanations: dict[str, Any]) -> None:
+def _render_score_explanations(explanations: dict[str, Any]) -> None:
     for key, label in EXPLANATION_LABELS.items():
         component = explanations.get(key)
         if not component:
             continue
-        with st.expander(f"{label}: {format_score(component.get('score'))}"):
+        score = component.get("score")
+        with st.expander(f"{label}: {format_score(score)}"):
+            st.markdown(
+                status_badge_html(format_score(score), score_tone(score)),
+                unsafe_allow_html=True,
+            )
             st.write(component.get("reason") or "No explanation is available.")
             inputs = component.get("inputs") or {}
             if inputs:
@@ -76,49 +101,78 @@ def _render_explanations(explanations: dict[str, Any]) -> None:
                 )
 
 
-def _render_cluster(cluster: OpportunityCluster, score: OpportunityScore | None) -> None:
-    st.header(cluster.title)
+def _render_overview(
+    cluster: OpportunityCluster,
+    score: OpportunityScore | None,
+) -> None:
+    state, updated = st.columns([3, 1])
+    state.markdown(
+        status_badge_html(
+            cluster.status.replace("_", " ").title(),
+            "good" if cluster.status == "researched" else "neutral",
+        ),
+        unsafe_allow_html=True,
+    )
+    updated.caption(f"Updated {format_datetime(cluster.updated_at)}")
     st.write(cluster.problem_summary)
-    summary_columns = st.columns(3)
-    summary_columns[0].markdown(f"**Target user**  \n{cluster.target_customer or 'Unknown'}")
-    summary_columns[1].markdown(
+
+    target, workaround, solution = st.columns(3)
+    target.markdown(f"**Target user**  \n{cluster.target_customer or 'Unknown'}")
+    workaround.markdown(
         f"**Current workaround**  \n{cluster.current_workaround or 'Not established'}"
     )
-    summary_columns[2].markdown(
+    solution.markdown(
         f"**Proposed MVP**  \n{cluster.proposed_solution or 'Not generated'}"
     )
 
-    if score:
-        cards = st.columns(4)
-        cards[0].metric("Problem Score", format_score(_problem_score(score)))
-        cards[1].metric("White-Space", format_score(score.whitespace_score))
-        cards[2].metric("Opportunity Score", format_score(score.opportunity_score))
-        cards[3].metric("Confidence", format_score(score.confidence_score))
+    st.subheader("Scorecard")
+    if score is None:
+        st.info("This opportunity has not been scored yet.")
+    else:
+        problem, whitespace, opportunity, confidence = st.columns(4)
+        problem.metric("Problem Score", format_score(_problem_score(score)))
+        whitespace.metric("White-Space", format_score(score.whitespace_score))
+        opportunity.metric("Opportunity Score", format_score(score.opportunity_score))
+        confidence.metric("Confidence", format_score(score.confidence_score))
         if score.opportunity_score >= 65 and score.confidence_score < 50:
             st.warning(
-                "This opportunity looks promising, but confidence remains limited. Add more "
-                "independent evidence before relying on the ranking."
+                "The score is promising, but confidence is limited. Add independent "
+                "evidence before treating the ranking as reliable."
             )
-        st.subheader("Score explanations")
-        _render_explanations(score.explanation_json or {})
-    else:
-        st.info("This cluster has not been scored yet.")
 
-    st.subheader("Evidence")
+    st.subheader("Decision risks")
+    st.write(
+        "Evidence coverage, search coverage, classification confidence, build feasibility, "
+        "and customer access still require human validation."
+    )
+
+
+def _render_evidence(cluster: OpportunityCluster) -> None:
     links = sorted(
         cluster.evidence_links,
         key=lambda link: link.evidence_item.collected_at,
         reverse=True,
     )
-    metrics = st.columns(3)
-    metrics[0].metric("Linked items", cluster.evidence_count)
-    metrics[1].metric("Independent authors", cluster.independent_author_count)
-    metrics[2].metric("Independent sources", cluster.independent_source_count)
+    linked, authors, sources = st.columns(3)
+    linked.metric("Linked items", cluster.evidence_count)
+    authors.metric("Independent authors", cluster.independent_author_count)
+    sources.metric("Independent sources", cluster.independent_source_count)
     st.caption(
         f"Evidence range: {format_datetime(cluster.first_seen_at)} to "
         f"{format_datetime(cluster.last_seen_at)}"
     )
-    for link in links:
+    if not links:
+        st.info("This opportunity has no linked evidence.")
+        return
+
+    toolbar, sizing = st.columns([4, 1])
+    toolbar.caption(f"{len(links)} linked evidence item(s)")
+    with sizing:
+        page_size = page_size_control(f"evidence-{cluster.id}", default=10)
+    key = f"evidence-{cluster.id}"
+    page_number = int(st.session_state.get(f"{key}-page", 1))
+    page_slice = paginate_items(links, page=page_number, page_size=page_size)
+    for link in page_slice.items:
         item = link.evidence_item
         quote = (item.metadata_json or {}).get("evidence_quote") or item.raw_text
         with st.expander(item.title or item.problem_statement or "Evidence item"):
@@ -126,59 +180,107 @@ def _render_cluster(cluster: OpportunityCluster, score: OpportunityScore | None)
             st.caption(
                 f"Similarity: {link.similarity_score:.2f} | "
                 f"Author: {item.source_author or 'unknown'} | "
-                f"Source: {item.community or item.platform}"
+                f"Source: {item.community or item.platform} | "
+                f"Collected: {format_datetime(item.collected_at)}"
             )
             if item.source_url:
                 st.link_button("Open source", item.source_url)
+    render_pagination(page_slice, key)
 
-    st.subheader("Competitors")
-    visible = [item for item in cluster.competitors if item.relationship_type != "irrelevant"]
+
+def _render_competitors(cluster: OpportunityCluster) -> None:
+    visible = [
+        item for item in cluster.competitors if item.relationship_type != "irrelevant"
+    ]
     if not visible:
-        st.caption("No relevant competitors are stored yet.")
-    if visible:
-        headers = st.columns([2, 1, 2, 2])
-        for column, label in zip(headers, ("Product", "Type", "Problem", "Supported gap")):
-            column.markdown(f"**{label}**")
-    for competitor in visible:
-        columns = st.columns([2, 1, 2, 2])
-        product = competitor.product_name or competitor.company_name or "Unknown"
-        if competitor.url:
-            columns[0].link_button(product, competitor.url)
-        else:
-            columns[0].write(product)
-        columns[1].write(competitor.relationship_type.title())
-        columns[2].write(competitor.problem_solved or "Unknown problem")
-        columns[3].write(competitor.possible_gap or "No supported gap yet")
+        st.info("No relevant competitors are stored yet.")
+        return
 
-    st.subheader("Risks")
-    st.write(
-        "Evidence may not represent the wider market. Search coverage, classification "
-        "confidence, build feasibility, and customer access should be reviewed before acting."
+    relationships = sorted({item.relationship_type for item in visible})
+    selected = st.multiselect(
+        "Relationship type",
+        relationships,
+        default=relationships,
+        key=f"competitor-filter-{cluster.id}",
     )
+    filtered = [item for item in visible if item.relationship_type in selected]
+    toolbar, sizing = st.columns([4, 1])
+    toolbar.caption(f"{len(filtered)} competitor result(s)")
+    with sizing:
+        page_size = page_size_control(f"competitors-{cluster.id}", default=10)
+    key = f"competitors-{cluster.id}"
+    page_number = int(st.session_state.get(f"{key}-page", 1))
+    page_slice = paginate_items(filtered, page=page_number, page_size=page_size)
 
-
-def _render_research_history(queries: list[SearchQuery]) -> None:
-    with st.expander(f"Search history ({len(queries)})"):
-        if not queries:
-            st.caption("No competitor queries have been run.")
-        for query in queries[:30]:
-            st.write(query.query_text)
-            detail = f"{query.status.title()} | {query.result_count} result(s)"
-            if query.error_message:
-                detail += f" | {query.error_message}"
-            st.caption(detail)
-
-
-def _render_feedback_history(feedback: list[UserFeedback]) -> None:
-    with st.expander(f"Correction history ({len(feedback)})"):
-        if not feedback:
-            st.caption("No user corrections have been recorded.")
-        for item in feedback[:50]:
-            st.write(f"{item.entity_type}: {item.field_name}")
-            st.caption(
-                f"{item.original_value or 'null'} -> {item.corrected_value or 'null'} | "
-                f"{format_datetime(item.created_at)}"
+    for competitor in page_slice.items:
+        with st.container(border=True):
+            product_column, type_column = st.columns([4, 1])
+            product = competitor.product_name or competitor.company_name or "Unknown"
+            if competitor.url:
+                product_column.link_button(product, competitor.url)
+            else:
+                product_column.subheader(product)
+            type_column.markdown(
+                status_badge_html(competitor.relationship_type.title(), "neutral"),
+                unsafe_allow_html=True,
             )
+            problem, gap = st.columns(2)
+            problem.markdown(
+                f"**Problem solved**  \n{competitor.problem_solved or 'Unknown problem'}"
+            )
+            gap.markdown(
+                f"**Supported gap**  \n{competitor.possible_gap or 'No supported gap yet'}"
+            )
+            if competitor.weaknesses:
+                st.caption("Weaknesses: " + ", ".join(competitor.weaknesses))
+    render_pagination(page_slice, key)
+
+
+def _render_research_history(queries: list[SearchQuery], cluster_id: str) -> None:
+    st.subheader("Search history")
+    if not queries:
+        st.info("No competitor queries have been run.")
+        return
+    key = f"query-history-{cluster_id}"
+    page_slice = paginate_items(
+        queries,
+        page=int(st.session_state.get(f"{key}-page", 1)),
+        page_size=10,
+    )
+    for query in page_slice.items:
+        query_text, query_state = st.columns([4, 1])
+        query_text.write(query.query_text)
+        tone = "good" if query.status == "completed" else "warn"
+        query_state.markdown(
+            status_badge_html(query.status.title(), tone), unsafe_allow_html=True
+        )
+        detail = f"{query.result_count} result(s)"
+        if query.error_message:
+            detail += f" | {query.error_message}"
+        st.caption(detail)
+        st.divider()
+    render_pagination(page_slice, key)
+
+
+def _render_feedback_history(feedback: list[UserFeedback], cluster_id: str) -> None:
+    st.subheader("Correction history")
+    if not feedback:
+        st.info("No user corrections have been recorded.")
+        return
+    key = f"feedback-history-{cluster_id}"
+    page_slice = paginate_items(
+        feedback,
+        page=int(st.session_state.get(f"{key}-page", 1)),
+        page_size=10,
+    )
+    for item in page_slice.items:
+        st.write(f"{item.entity_type}: {item.field_name}")
+        st.caption(
+            f"{item.original_value or 'null'} -> {item.corrected_value or 'null'} | "
+            f"{format_datetime(item.created_at)}"
+        )
+        st.divider()
+    render_pagination(page_slice, key)
 
 
 def _render_corrections(
@@ -187,22 +289,31 @@ def _render_corrections(
     SessionFactory: Any,
     settings: Any,
 ) -> None:
-    st.subheader("Corrections")
-    with st.expander("Edit target customer"):
+    customer_tab, evidence_tab, competitor_tab, cluster_tab = st.tabs(
+        ["Target customer", "Evidence", "Competitors", "Merge or split"]
+    )
+
+    with customer_tab:
         with st.form(f"target-customer-{cluster.id}"):
-            target = st.text_input("Target customer", value=cluster.target_customer or "")
-            submitted = st.form_submit_button("Save target customer")
+            target = st.text_input(
+                "Target customer", value=cluster.target_customer or ""
+            )
+            submitted = st.form_submit_button(
+                "Save target customer", type="primary", use_container_width=True
+            )
         if submitted:
             with SessionFactory() as session:
                 build_correction_service(session, settings).update_target_customer(
                     cluster.id, target
                 )
+            clear_ui_data_caches()
+            set_flash("Target customer updated and scores recomputed.")
             st.rerun()
 
-    with st.expander("Correct extracted evidence"):
+    with evidence_tab:
         evidence_items = [link.evidence_item for link in cluster.evidence_links]
         if not evidence_items:
-            st.caption("This cluster has no linked evidence.")
+            st.info("This opportunity has no linked evidence.")
         else:
             evidence_id = st.selectbox(
                 "Evidence item",
@@ -245,7 +356,9 @@ def _render_corrections(
                     float(item.willingness_to_pay_score),
                     0.05,
                 )
-                evidence_submitted = st.form_submit_button("Save evidence correction")
+                evidence_submitted = st.form_submit_button(
+                    "Save evidence correction", type="primary", use_container_width=True
+                )
             if evidence_submitted:
                 with SessionFactory() as session:
                     build_correction_service(session, settings).correct_evidence(
@@ -259,11 +372,13 @@ def _render_corrections(
                         frequency_signal=frequency,
                         willingness_to_pay_score=willingness,
                     )
+                clear_ui_data_caches()
+                set_flash("Evidence correction saved and affected scores recomputed.")
                 st.rerun()
 
-    with st.expander("Reclassify competitor"):
+    with competitor_tab:
         if not cluster.competitors:
-            st.caption("No stored competitors are available to reclassify.")
+            st.info("No stored competitors are available to reclassify.")
         else:
             competitor_id = st.selectbox(
                 "Competitor",
@@ -275,24 +390,32 @@ def _render_corrections(
                 ),
                 key=f"competitor-correction-select-{cluster.id}",
             )
-            selected = next(item for item in cluster.competitors if item.id == competitor_id)
+            selected = next(
+                item for item in cluster.competitors if item.id == competitor_id
+            )
             with st.form(f"competitor-correction-{selected.id}"):
                 relationship = st.selectbox(
                     "Relationship type",
                     RELATIONSHIP_TYPES,
                     index=RELATIONSHIP_TYPES.index(selected.relationship_type),
                 )
-                competitor_submitted = st.form_submit_button("Save classification")
+                competitor_submitted = st.form_submit_button(
+                    "Save classification", type="primary", use_container_width=True
+                )
             if competitor_submitted:
                 with SessionFactory() as session:
                     build_correction_service(session, settings).reclassify_competitor(
                         selected.id, relationship
                     )
+                clear_ui_data_caches()
+                set_flash("Competitor classification updated and scores recomputed.")
                 st.rerun()
 
-    with st.expander("Merge or split cluster"):
+    with cluster_tab:
         merge_targets = [
-            item for item in all_clusters if item.id != cluster.id and item.status != "archived"
+            item
+            for item in all_clusters
+            if item.id != cluster.id and item.status != "archived"
         ]
         if merge_targets:
             with st.form(f"merge-cluster-{cluster.id}"):
@@ -303,16 +426,20 @@ def _render_corrections(
                         item.title for item in merge_targets if item.id == item_id
                     ),
                 )
-                merge_submitted = st.form_submit_button("Merge cluster")
+                merge_submitted = st.form_submit_button(
+                    "Merge cluster", use_container_width=True
+                )
             if merge_submitted:
                 with SessionFactory() as session:
                     build_correction_service(session, settings).merge_clusters(
                         cluster.id, target_id
                     )
+                clear_ui_data_caches()
                 st.session_state["selected_cluster_id"] = target_id
+                set_flash("Clusters merged and affected scores recomputed.")
                 st.rerun()
         else:
-            st.caption("No other active cluster is available for merging.")
+            st.info("No other active cluster is available for merging.")
 
         evidence_items = [link.evidence_item for link in cluster.evidence_links]
         if len(evidence_items) >= 2:
@@ -327,30 +454,43 @@ def _render_corrections(
                     )[:100],
                 )
                 split_title = st.text_input("New cluster title (optional)")
-                split_submitted = st.form_submit_button("Split selected evidence")
+                split_submitted = st.form_submit_button(
+                    "Split selected evidence", use_container_width=True
+                )
             if split_submitted:
                 with SessionFactory() as session:
-                    new_cluster = build_correction_service(session, settings).split_cluster(
-                        cluster.id, split_ids, title=split_title or None
-                    )
+                    new_cluster = build_correction_service(
+                        session, settings
+                    ).split_cluster(cluster.id, split_ids, title=split_title or None)
+                clear_ui_data_caches()
                 st.session_state["selected_cluster_id"] = new_cluster.id
+                set_flash("Evidence split into a new cluster and scores recomputed.")
                 st.rerun()
 
 
 def main() -> None:
-    """Render one selected cluster and all Phase 5-7 controls."""
+    """Render one selected cluster and all research and correction controls."""
 
-    st.set_page_config(page_title="InSift Opportunity Details", page_icon="IS", layout="wide")
-    st.title("Opportunity Details")
     settings = get_settings()
-    SessionFactory = create_session_factory(create_database_engine(settings))
+    configure_page("Opportunity details", settings)
+    page_header(
+        "Opportunity details",
+        "Inspect evidence, market coverage, score logic, and the correction audit trail.",
+        eyebrow="Evidence review",
+    )
+    render_flash()
+    SessionFactory = get_ui_session_factory(settings.database_url)
 
     try:
         with SessionFactory() as session:
             clusters = ClusterRepository(session).list(limit=1000)
         if not clusters:
-            st.info("No opportunity clusters exist yet. Add evidence on the Discover page.")
+            st.info("No opportunity clusters exist yet.")
+            render_page_link(
+                "pages/1_Discover.py", label="Open Discover", route="/Discover"
+            )
             return
+
         ids = [cluster.id for cluster in clusters]
         selected = st.session_state.get("selected_cluster_id")
         selected_index = ids.index(selected) if selected in ids else 0
@@ -364,22 +504,55 @@ def main() -> None:
         )
         st.session_state["selected_cluster_id"] = selected_id
 
-        left, right = st.columns(2)
-        if left.button("Recompute scores", type="primary", use_container_width=True):
-            with SessionFactory() as session:
-                OpportunityScorer(session).score_cluster(selected_id)
-            st.rerun()
-        if right.button("Research competitors", use_container_width=True):
-            with st.spinner("Searching and classifying competitors..."):
+        recompute, research = st.columns(2)
+        if recompute.button(
+            "Recompute scores", type="primary", use_container_width=True
+        ):
+            with st.status("Recomputing scores", expanded=True) as status:
+                status.write("Loading evidence and competitor inputs")
                 with SessionFactory() as session:
-                    outcome = build_research_service(session, settings).research_cluster(
-                        selected_id
+                    OpportunityScorer(session).score_cluster(selected_id)
+                clear_ui_data_caches()
+                status.update(
+                    label="Scores recomputed", state="complete", expanded=False
+                )
+            set_flash("Scores recomputed from the latest stored evidence.")
+            st.rerun()
+
+        research_ready = settings.search_ready and settings.llm_ready
+        if research.button(
+            "Research competitors",
+            use_container_width=True,
+            disabled=not research_ready,
+        ):
+            with st.status("Researching competitors", expanded=True) as status:
+                progress = st.progress(0, text="Preparing competitor research")
+
+                def update_progress(value: float, message: str) -> None:
+                    progress.progress(int(value * 100), text=message)
+
+                with SessionFactory() as session:
+                    outcome = build_research_service(
+                        session, settings
+                    ).research_cluster(
+                        selected_id,
+                        progress_callback=update_progress,
                     )
-            st.success(
+                clear_ui_data_caches()
+                status.update(
+                    label="Competitor research complete",
+                    state="complete",
+                    expanded=False,
+                )
+            set_flash(
                 f"Ran {len(outcome.queries)} queries and stored "
                 f"{len(outcome.competitors)} relevant competitor(s)."
             )
             st.rerun()
+        if not research_ready:
+            research.info(
+                "Configure OpenAI and Tavily in Settings to run live research."
+            )
 
         with SessionFactory() as session:
             cluster = ClusterRepository(session).get(selected_id)
@@ -387,24 +560,52 @@ def main() -> None:
             queries = ResearchRepository(session).list_queries_for_cluster(selected_id)
             entity_ids = {selected_id}
             if cluster:
-                entity_ids.update(link.evidence_item_id for link in cluster.evidence_links)
+                entity_ids.update(
+                    link.evidence_item_id for link in cluster.evidence_links
+                )
                 entity_ids.update(item.id for item in cluster.competitors)
             feedback = [
                 item
-                for item in FeedbackRepository(session).list_recent(limit=200)
+                for item in FeedbackRepository(session).list_recent(limit=500)
                 if item.entity_id in entity_ids
             ]
-        if cluster is not None:
-            _render_cluster(cluster, latest_score)
-            _render_research_history(queries)
+        if cluster is None:
+            st.error("The selected opportunity no longer exists.")
+            return
+
+        st.header(cluster.title)
+        (
+            overview_tab,
+            evidence_tab,
+            competitor_tab,
+            scoring_tab,
+            correction_tab,
+            history_tab,
+        ) = st.tabs(
+            ["Overview", "Evidence", "Competitors", "Scoring", "Corrections", "History"]
+        )
+        with overview_tab:
+            _render_overview(cluster, latest_score)
+        with evidence_tab:
+            _render_evidence(cluster)
+        with competitor_tab:
+            _render_competitors(cluster)
+        with scoring_tab:
+            if latest_score:
+                _render_score_explanations(latest_score.explanation_json or {})
+            else:
+                st.info("This opportunity has not been scored yet.")
+        with correction_tab:
             _render_corrections(cluster, clusters, SessionFactory, settings)
-            _render_feedback_history(feedback)
+        with history_tab:
+            _render_research_history(queries, cluster.id)
+            _render_feedback_history(feedback, cluster.id)
     except SearchProviderError as exc:
-        st.error(str(exc))
+        st.error(f"Competitor research could not complete: {exc}")
     except SQLAlchemyError:
-        st.error("Opportunity details are unavailable because the database could not be updated.")
+        render_database_error("Opportunity details", settings)
     except ValueError as exc:
-        st.error(str(exc))
+        st.error(f"The requested update could not be completed: {exc}")
 
 
 if __name__ == "__main__":

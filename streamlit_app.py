@@ -1,110 +1,153 @@
-"""InSift Streamlit home page."""
+"""InSift Streamlit overview dashboard."""
 
 from __future__ import annotations
 
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.config import get_settings, redacted_database_url
-from src.database.models import EvidenceItem
-from src.database.session import create_database_engine, create_session_factory
-from src.services.opportunity_service import OpportunityService, RankedOpportunity
+from src.config import get_settings
+from src.services.opportunity_service import RankedOpportunity
+from src.ui.components import (
+    configure_page,
+    page_header,
+    render_database_error,
+    render_page_link,
+    status_badge_html,
+)
+from src.ui.data import DashboardSnapshot, EvidenceSummary, load_dashboard_snapshot
 from src.ui.formatting import format_datetime, format_score
 
 
-def _render_opportunities(opportunities: list[RankedOpportunity]) -> None:
-    """Render opportunity rows without Streamlit's Arrow-backed dataframe."""
+def _render_opportunities(opportunities: tuple[RankedOpportunity, ...]) -> None:
+    """Render compact, responsive opportunity rows."""
 
     if not opportunities:
-        st.info("No opportunities have been seeded yet.")
+        st.info("No scored opportunities are available yet.")
+        render_page_link(
+            "pages/1_Discover.py", label="Open Discover", route="/Discover"
+        )
         return
-
-    header = st.columns([3, 2, 1, 1, 1, 1, 1, 1.5])
-    header[0].markdown("**Opportunity**")
-    header[1].markdown("**Target customer**")
-    header[2].markdown("**Evidence**")
-    header[3].markdown("**Problem**")
-    header[4].markdown("**Opportunity**")
-    header[5].markdown("**Confidence**")
-    header[6].markdown("**Competitors**")
-    header[7].markdown("**Last updated**")
-    st.divider()
 
     for opportunity in opportunities:
-        cols = st.columns([3, 2, 1, 1, 1, 1, 1, 1.5])
-        cols[0].write(opportunity.title)
-        cols[1].write(opportunity.target_customer or "Unknown")
-        cols[2].write(str(opportunity.evidence_count))
-        cols[3].write(format_score(opportunity.problem_score))
-        cols[4].write(format_score(opportunity.opportunity_score))
-        cols[5].write(format_score(opportunity.confidence_score))
-        cols[6].write(str(opportunity.competitor_count))
-        cols[7].write(format_datetime(opportunity.last_updated))
+        with st.container(border=True):
+            summary, problem, whitespace, opportunity_score, confidence = st.columns(
+                [3.4, 1, 1, 1, 1]
+            )
+            if summary.button(
+                opportunity.title,
+                key=f"dashboard-open-{opportunity.cluster_id}",
+                use_container_width=True,
+            ):
+                st.session_state["selected_cluster_id"] = opportunity.cluster_id
+                st.switch_page("pages/3_Opportunity_Details.py")
+            target = opportunity.target_customer or "Target customer not established"
+            summary.caption(
+                f"{target} | {opportunity.evidence_count} evidence item(s) | "
+                f"{opportunity.competitor_count} competitor(s)"
+            )
+            summary.markdown(
+                status_badge_html(
+                    opportunity.research_status.replace("_", " ").title(),
+                    "good"
+                    if opportunity.research_status == "researched"
+                    else "neutral",
+                ),
+                unsafe_allow_html=True,
+            )
+            problem.markdown(f"**{format_score(opportunity.problem_score)}**")
+            problem.caption("Problem")
+            whitespace.markdown(f"**{format_score(opportunity.whitespace_score)}**")
+            whitespace.caption("White-space")
+            opportunity_score.markdown(
+                f"**{format_score(opportunity.opportunity_score)}**"
+            )
+            opportunity_score.caption("Opportunity")
+            confidence.markdown(f"**{format_score(opportunity.confidence_score)}**")
+            confidence.caption("Confidence")
 
 
-def _render_recent_evidence(evidence_items: list[EvidenceItem]) -> None:
-    """Render recent evidence without requiring pandas or pyarrow."""
+def _render_recent_evidence(evidence_items: tuple[EvidenceSummary, ...]) -> None:
+    """Render recent evidence as a scan-friendly activity list."""
 
     if not evidence_items:
-        st.info("No evidence items yet.")
+        st.info("No evidence has been collected yet.")
         return
 
-    header = st.columns([3, 2, 1, 1.5])
-    header[0].markdown("**Title**")
-    header[1].markdown("**Community**")
-    header[2].markdown("**Problem**")
-    header[3].markdown("**Collected**")
-    st.divider()
-
     for item in evidence_items:
-        cols = st.columns([3, 2, 1, 1.5])
-        cols[0].write(item.title or "Untitled")
-        cols[1].write(item.community or item.platform)
-        cols[2].write("Yes" if item.contains_problem else "No")
-        cols[3].write(format_datetime(item.collected_at))
+        title, source, state, collected = st.columns([3.5, 1.5, 1, 1.5])
+        title.write(item.title or item.problem_statement or "Untitled discussion")
+        title.caption((item.problem_statement or item.raw_text)[:150])
+        source.write(item.community or item.platform)
+        state.markdown(
+            status_badge_html(
+                "Accepted" if item.contains_problem else "Review",
+                "good" if item.contains_problem else "warn",
+            ),
+            unsafe_allow_html=True,
+        )
+        collected.write(format_datetime(item.collected_at))
+        st.divider()
+
+
+def _render_metrics(snapshot: DashboardSnapshot) -> None:
+    metrics = snapshot.metrics
+    coverage = (
+        (metrics.researched_opportunity_count / metrics.cluster_count) * 100
+        if metrics.cluster_count
+        else 0.0
+    )
+    evidence, clusters, researched, coverage_column = st.columns(4)
+    evidence.metric("Evidence items", metrics.evidence_count)
+    clusters.metric("Opportunity clusters", metrics.cluster_count)
+    researched.metric("Researched", metrics.researched_opportunity_count)
+    coverage_column.metric("Research coverage", f"{coverage:.0f}%")
 
 
 def main() -> None:
-    """Render the home dashboard."""
+    """Render the overview dashboard."""
 
     settings = get_settings()
-    st.set_page_config(page_title="InSift", page_icon="IS", layout="wide")
-
-    st.title("InSift")
-    st.write(
-        "Evidence-backed startup opportunity discovery from real online discussions."
+    configure_page("Overview", settings)
+    page_header(
+        "InSift",
+        "Evidence-backed opportunities ranked by problem strength, market gaps, and confidence.",
+        eyebrow="Opportunity intelligence",
     )
+
+    if not settings.demo_mode and not settings.live_ready:
+        st.warning(
+            "Production mode is active, but one or more live providers still need "
+            "credentials. Existing data remains available while setup is completed."
+        )
+        render_page_link(
+            "pages/4_Settings.py",
+            label="Complete live setup",
+            route="/Settings",
+            use_container_width=False,
+        )
 
     try:
-        engine = create_database_engine(settings)
-        SessionFactory = create_session_factory(engine)
-        with SessionFactory() as session:
-            service = OpportunityService(session)
-            metrics = service.dashboard_metrics()
-            opportunities = service.ranked_opportunities(limit=10)
-            recent_evidence = service.recent_evidence(limit=5)
+        with st.spinner("Loading the latest opportunity signals..."):
+            snapshot = load_dashboard_snapshot(settings.database_url)
     except SQLAlchemyError:
-        st.error(
-            "The database is not ready yet. Run `python scripts/initialize_database.py` "
-            "and then `python scripts/seed_demo_data.py`."
-        )
-        st.caption(f"Configured database: {redacted_database_url(settings.database_url)}")
+        render_database_error("The overview", settings)
         return
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Evidence items", metrics.evidence_count)
-    col2.metric("Opportunity clusters", metrics.cluster_count)
-    col3.metric("Scored opportunities", metrics.researched_opportunity_count)
+    _render_metrics(snapshot)
 
-    st.subheader("Highest-ranked opportunities")
-    _render_opportunities(opportunities)
+    heading, mode = st.columns([4, 1])
+    heading.subheader("Highest-ranked opportunities")
+    mode.markdown(
+        status_badge_html(
+            "30-second cache",
+            "neutral",
+        ),
+        unsafe_allow_html=True,
+    )
+    _render_opportunities(snapshot.opportunities)
 
     st.subheader("Recent ingestion activity")
-    _render_recent_evidence(recent_evidence)
-
-    st.caption(
-        "Demo mode is on." if settings.demo_mode else "Demo mode is off."
-    )
+    _render_recent_evidence(snapshot.recent_evidence)
 
 
 if __name__ == "__main__":

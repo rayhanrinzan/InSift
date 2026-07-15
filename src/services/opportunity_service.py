@@ -7,15 +7,14 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from src.database.models import (
-    Competitor,
+    ClusterEvidence,
     EvidenceItem,
     OpportunityCluster,
     OpportunityScore,
 )
-from src.database.repositories import ClusterRepository
 
 
 @dataclass(frozen=True)
@@ -50,13 +49,16 @@ class OpportunityService:
 
     def __init__(self, session: Session) -> None:
         self.session = session
-        self.clusters = ClusterRepository(session)
 
     def dashboard_metrics(self) -> DashboardMetrics:
         """Return high-level dashboard counts."""
 
-        evidence_count = int(self.session.scalar(select(func.count(EvidenceItem.id))) or 0)
-        cluster_count = int(self.session.scalar(select(func.count(OpportunityCluster.id))) or 0)
+        evidence_count = int(
+            self.session.scalar(select(func.count(EvidenceItem.id))) or 0
+        )
+        cluster_count = int(
+            self.session.scalar(select(func.count(OpportunityCluster.id))) or 0
+        )
         researched = int(
             self.session.scalar(
                 select(func.count(OpportunityCluster.id)).where(
@@ -75,21 +77,26 @@ class OpportunityService:
         """Return clusters with their latest score, ordered by opportunity score."""
 
         rows: list[RankedOpportunity] = []
-        clusters = self.clusters.list(limit=100)
+        statement = (
+            select(OpportunityCluster)
+            .options(
+                selectinload(OpportunityCluster.scores),
+                selectinload(OpportunityCluster.evidence_links).selectinload(
+                    ClusterEvidence.evidence_item
+                ),
+                selectinload(OpportunityCluster.competitors),
+            )
+            .order_by(OpportunityCluster.updated_at.desc())
+            .limit(limit)
+        )
+        clusters = list(self.session.execute(statement).scalars())
         for cluster in clusters:
             latest_score = max(
                 cluster.scores,
                 key=lambda score: score.created_at,
                 default=None,
             )
-            competitor_count = int(
-                self.session.scalar(
-                    select(func.count(Competitor.id)).where(
-                        Competitor.cluster_id == cluster.id
-                    )
-                )
-                or 0
-            )
+            competitor_count = len(cluster.competitors)
             rows.append(
                 RankedOpportunity(
                     cluster_id=cluster.id,
@@ -122,7 +129,10 @@ class OpportunityService:
             )
         return sorted(
             rows,
-            key=lambda row: (row.opportunity_score is not None, row.opportunity_score or 0.0),
+            key=lambda row: (
+                row.opportunity_score is not None,
+                row.opportunity_score or 0.0,
+            ),
             reverse=True,
         )[:limit]
 
@@ -130,9 +140,7 @@ class OpportunityService:
         """Return recent evidence for dashboard activity."""
 
         statement = (
-            select(EvidenceItem)
-            .order_by(EvidenceItem.collected_at.desc())
-            .limit(limit)
+            select(EvidenceItem).order_by(EvidenceItem.collected_at.desc()).limit(limit)
         )
         return list(self.session.execute(statement).scalars())
 

@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import re
+from typing import Any, Protocol
 
+from pydantic import ValidationError
+
+from src.config import Settings
 from src.extraction.competitor_extractor import extract_product_fields
+from src.providers.openai import OpenAIClient, OpenAIProviderError
+from src.research.competitor_search import SearchProviderError
 from src.research.schemas import (
     CompetitorClassification,
     CompetitorResearchContext,
@@ -13,13 +20,101 @@ from src.research.schemas import (
 
 
 STOP_WORDS = {
-    "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "is", "of",
-    "on", "or", "the", "to", "with", "software", "tool", "tools", "teams", "users",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "is",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+    "software",
+    "tool",
+    "tools",
+    "teams",
+    "users",
 }
 SUBSTITUTE_MARKERS = {
-    "airtable", "consultant", "excel", "google sheets", "manual", "notion",
-    "spreadsheet", "spreadsheets", "agency",
+    "airtable",
+    "consultant",
+    "excel",
+    "google sheets",
+    "manual",
+    "notion",
+    "spreadsheet",
+    "spreadsheets",
+    "agency",
 }
+
+
+class CompetitorClassificationProvider(Protocol):
+    """Classify one normalized search result against an opportunity."""
+
+    def classify(
+        self,
+        context: CompetitorResearchContext,
+        result: SearchResult,
+    ) -> CompetitorClassification:
+        """Return a grounded competitor classification."""
+
+
+NULLABLE_STRING_SCHEMA = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+COMPETITOR_CLASSIFICATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "company_name": NULLABLE_STRING_SCHEMA,
+        "product_name": NULLABLE_STRING_SCHEMA,
+        "relationship_type": {
+            "type": "string",
+            "enum": ["direct", "adjacent", "substitute", "irrelevant"],
+        },
+        "target_customer": NULLABLE_STRING_SCHEMA,
+        "problem_solved": NULLABLE_STRING_SCHEMA,
+        "features": {"type": "array", "items": {"type": "string"}},
+        "pricing_position": NULLABLE_STRING_SCHEMA,
+        "similarity_score": {"type": "number"},
+        "strengths": {"type": "array", "items": {"type": "string"}},
+        "weaknesses": {"type": "array", "items": {"type": "string"}},
+        "possible_gap": NULLABLE_STRING_SCHEMA,
+        "confidence": {"type": "number"},
+        "reasoning": {"type": "string"},
+    },
+    "required": [
+        "company_name",
+        "product_name",
+        "relationship_type",
+        "target_customer",
+        "problem_solved",
+        "features",
+        "pricing_position",
+        "similarity_score",
+        "strengths",
+        "weaknesses",
+        "possible_gap",
+        "confidence",
+        "reasoning",
+    ],
+}
+
+COMPETITOR_CLASSIFICATION_PROMPT = """
+Classify a web search result against one documented startup opportunity. A direct
+competitor serves the same core customer and problem. An adjacent competitor overlaps
+the customer or workflow but not both. A substitute is a manual process, spreadsheet,
+general-purpose tool, employee, consultant, or agency used instead. Mark a result
+irrelevant when the supplied title, snippet, and content do not support a meaningful
+relationship. Use only supplied evidence. Do not invent features, pricing, weaknesses,
+or gaps; use null or empty arrays when unsupported. Keep reasoning concise.
+""".strip()
 
 
 def _tokens(value: str | None) -> set[str]:
@@ -37,8 +132,12 @@ def _tokens(value: str | None) -> set[str]:
         "practice": "clinic",
         "practices": "clinic",
     }
-    values = set(re.findall(r"[a-z0-9]+", value.lower().replace("follow up", "follow-up")))
-    return {replacements.get(token, token) for token in values if token not in STOP_WORDS}
+    values = set(
+        re.findall(r"[a-z0-9]+", value.lower().replace("follow up", "follow-up"))
+    )
+    return {
+        replacements.get(token, token) for token in values if token not in STOP_WORDS
+    }
 
 
 def _coverage(reference: set[str], candidate: set[str]) -> float:
@@ -79,13 +178,17 @@ class CompetitorClassifier:
             reasoning = "The deterministic demo result includes an explicit relationship fixture."
         elif any(marker in candidate_text.lower() for marker in SUBSTITUTE_MARKERS):
             relationship_type = "substitute"
-            reasoning = "The result is a manual or general-purpose alternative used instead."
+            reasoning = (
+                "The result is a manual or general-purpose alternative used instead."
+            )
         elif target_overlap >= 0.28 and problem_overlap >= 0.28:
             relationship_type = "direct"
             reasoning = "The result overlaps both the target customer and core problem."
         elif target_overlap >= 0.15 or problem_overlap >= 0.15:
             relationship_type = "adjacent"
-            reasoning = "The result overlaps the customer or workflow, but not both strongly."
+            reasoning = (
+                "The result overlaps the customer or workflow, but not both strongly."
+            )
         else:
             relationship_type = "irrelevant"
             reasoning = "The result lacks meaningful overlap with the customer and core problem."
@@ -97,10 +200,18 @@ class CompetitorClassifier:
             "substitute": max(0.30, min(0.65, base_similarity)),
             "irrelevant": min(0.25, base_similarity),
         }
-        confidence = 0.9 if explicit_type else min(0.92, 0.55 + abs(target_overlap - 0.2) + abs(problem_overlap - 0.2))
+        confidence = (
+            0.9
+            if explicit_type
+            else min(
+                0.92, 0.55 + abs(target_overlap - 0.2) + abs(problem_overlap - 0.2)
+            )
+        )
         possible_gap = fields.get("possible_gap")
         if relationship_type in {"adjacent", "substitute"} and not possible_gap:
-            possible_gap = "The result is not purpose-built for the full documented workflow."
+            possible_gap = (
+                "The result is not purpose-built for the full documented workflow."
+            )
 
         return CompetitorClassification(
             company_name=fields.get("company_name"),
@@ -117,3 +228,62 @@ class CompetitorClassifier:
             confidence=round(min(1.0, confidence), 3),
             reasoning=reasoning,
         )
+
+
+class OpenAICompetitorClassifier:
+    """Use OpenAI structured output to classify live search results."""
+
+    def __init__(self, client: OpenAIClient) -> None:
+        self.client = client
+
+    def classify(
+        self,
+        context: CompetitorResearchContext,
+        result: SearchResult,
+    ) -> CompetitorClassification:
+        input_payload = {
+            "opportunity": context.dict(),
+            "search_result": {
+                "title": result.title,
+                "url": result.url,
+                "snippet": result.snippet,
+                "content": (result.content or "")[:8000],
+            },
+        }
+        try:
+            payload = self.client.structured_response(
+                schema_name="competitor_classification",
+                schema=COMPETITOR_CLASSIFICATION_SCHEMA,
+                instructions=COMPETITOR_CLASSIFICATION_PROMPT,
+                input_text=json.dumps(input_payload, ensure_ascii=True),
+            )
+            return CompetitorClassification.parse_obj(payload)
+        except ValidationError as exc:
+            raise SearchProviderError(
+                "OpenAI returned an invalid competitor classification."
+            ) from exc
+        except OpenAIProviderError as exc:
+            raise SearchProviderError(str(exc)) from exc
+
+
+def build_competitor_classifier(settings: Settings) -> CompetitorClassificationProvider:
+    """Build deterministic demo or live OpenAI competitor classification."""
+
+    provider = (settings.llm_provider or "").lower()
+    if settings.demo_mode or provider == "mock":
+        return CompetitorClassifier()
+    if provider == "openai":
+        if not settings.llm_api_key:
+            raise SearchProviderError(
+                "LLM_API_KEY is required for competitor classification."
+            )
+        return OpenAICompetitorClassifier(
+            OpenAIClient(
+                settings.llm_api_key.get_secret_value(),
+                model=settings.llm_model,
+                base_url=settings.openai_base_url,
+            )
+        )
+    raise SearchProviderError(
+        "Configure LLM_PROVIDER=openai with an API key, or enable demo mode."
+    )

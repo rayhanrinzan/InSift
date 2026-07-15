@@ -1,6 +1,10 @@
 """Centralized application configuration."""
 
+import os
+import tempfile
 from functools import lru_cache
+from pathlib import Path
+from typing import Any
 from typing import Optional
 
 from pydantic import BaseSettings, Field, SecretStr, validator
@@ -13,6 +17,8 @@ class Settings(BaseSettings):
     database_url: str = Field("sqlite:///insift.db", env="DATABASE_URL")
     llm_provider: Optional[str] = Field(None, env="LLM_PROVIDER")
     llm_api_key: Optional[SecretStr] = Field(None, env="LLM_API_KEY")
+    llm_model: str = Field("gpt-5.6-luna", env="LLM_MODEL")
+    openai_base_url: str = Field("https://api.openai.com/v1", env="OPENAI_BASE_URL")
     embedding_provider: str = Field("sentence_transformers", env="EMBEDDING_PROVIDER")
     embedding_model: str = Field("all-MiniLM-L6-v2", env="EMBEDDING_MODEL")
     search_provider: Optional[str] = Field(None, env="SEARCH_PROVIDER")
@@ -25,10 +31,21 @@ class Settings(BaseSettings):
         0.45, env="MINIMUM_EXTRACTION_CONFIDENCE", ge=0.0, le=1.0
     )
     max_search_results: int = Field(10, env="MAX_SEARCH_RESULTS", ge=1, le=100)
+    reddit_client_id: Optional[str] = Field(None, env="REDDIT_CLIENT_ID")
+    reddit_client_secret: Optional[SecretStr] = Field(None, env="REDDIT_CLIENT_SECRET")
+    reddit_user_agent: str = Field(
+        "InSift/1.0 by configured-user", env="REDDIT_USER_AGENT"
+    )
     demo_mode: bool = Field(True, env="DEMO_MODE")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
-    @validator("llm_provider", "search_provider", pre=True, allow_reuse=True)
+    @validator(
+        "llm_provider",
+        "search_provider",
+        "reddit_client_id",
+        pre=True,
+        allow_reuse=True,
+    )
     def empty_string_to_none(cls, value: Optional[str]) -> Optional[str]:
         """Treat blank optional provider names as missing values."""
 
@@ -42,8 +59,56 @@ class Settings(BaseSettings):
 
         cleaned = value.strip().lower()
         if cleaned not in {"basic", "advanced", "fast", "ultra-fast"}:
-            raise ValueError("SEARCH_DEPTH must be basic, advanced, fast, or ultra-fast.")
+            raise ValueError(
+                "SEARCH_DEPTH must be basic, advanced, fast, or ultra-fast."
+            )
         return cleaned
+
+    @property
+    def llm_ready(self) -> bool:
+        provider = (self.llm_provider or "").lower()
+        return (
+            self.demo_mode
+            or provider == "mock"
+            or bool(provider == "openai" and self.llm_api_key)
+        )
+
+    @property
+    def embedding_ready(self) -> bool:
+        provider = self.embedding_provider.lower()
+        if self.demo_mode or provider in {
+            "mock",
+            "deterministic",
+            "sentence_transformers",
+        }:
+            return True
+        return bool(provider == "openai" and self.llm_api_key)
+
+    @property
+    def search_ready(self) -> bool:
+        provider = (self.search_provider or "").lower()
+        return (
+            self.demo_mode
+            or provider == "mock"
+            or bool(provider == "tavily" and self.search_api_key)
+        )
+
+    @property
+    def reddit_ready(self) -> bool:
+        return bool(self.reddit_client_id and self.reddit_client_secret)
+
+    @property
+    def discovery_ready(self) -> bool:
+        return self.llm_ready and self.embedding_ready
+
+    @property
+    def live_ready(self) -> bool:
+        return bool(
+            not self.demo_mode
+            and self.discovery_ready
+            and self.search_ready
+            and self.reddit_ready
+        )
 
     class Config:
         env_file = ".env"
@@ -68,3 +133,82 @@ def redacted_database_url(database_url: str) -> str:
         return database_url
     username = credentials.split(":", 1)[0]
     return f"{scheme}://{username}:***@{host}"
+
+
+EDITABLE_ENV_KEYS = {
+    "APP_ENV",
+    "DATABASE_URL",
+    "LLM_PROVIDER",
+    "LLM_API_KEY",
+    "LLM_MODEL",
+    "OPENAI_BASE_URL",
+    "EMBEDDING_PROVIDER",
+    "EMBEDDING_MODEL",
+    "SEARCH_PROVIDER",
+    "SEARCH_API_KEY",
+    "SEARCH_DEPTH",
+    "CLUSTER_SIMILARITY_THRESHOLD",
+    "MINIMUM_EXTRACTION_CONFIDENCE",
+    "MAX_SEARCH_RESULTS",
+    "REDDIT_CLIENT_ID",
+    "REDDIT_CLIENT_SECRET",
+    "REDDIT_USER_AGENT",
+    "DEMO_MODE",
+}
+
+
+def update_env_file(updates: dict[str, Any], env_path: str | Path = ".env") -> None:
+    """Atomically update approved local settings without returning secret values."""
+
+    unknown = set(updates) - EDITABLE_ENV_KEYS
+    if unknown:
+        raise ValueError(f"Unsupported setting: {sorted(unknown)[0]}")
+    normalized: dict[str, str] = {}
+    for key, value in updates.items():
+        rendered = str(value).lower() if isinstance(value, bool) else str(value)
+        if "\n" in rendered or "\r" in rendered or "\x00" in rendered:
+            raise ValueError(f"{key} contains unsupported characters.")
+        normalized[key] = rendered
+
+    path = Path(env_path)
+    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    output: list[str] = []
+    replaced: set[str] = set()
+    for line in existing:
+        candidate = line.strip()
+        if not candidate or candidate.startswith("#") or "=" not in line:
+            output.append(line)
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key in normalized:
+            output.append(f"{key}={_dotenv_value(normalized[key])}")
+            replaced.add(key)
+        else:
+            output.append(line)
+    for key, value in normalized.items():
+        if key not in replaced:
+            output.append(f"{key}={_dotenv_value(value)}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as temporary:
+            temporary.write("\n".join(output).rstrip() + "\n")
+        os.replace(temporary_name, path)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _dotenv_value(value: str) -> str:
+    """Quote dotenv values only when special characters require it."""
+
+    if value and all(
+        character.isalnum() or character in "_./:+-" for character in value
+    ):
+        return value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'

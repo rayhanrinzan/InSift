@@ -14,8 +14,8 @@ from src.config import Settings
 from src.database.models import EvidenceItem, OpportunityScore
 from src.database.repositories import EvidenceRepository
 from src.extraction.problem_extractor import (
-    DeterministicMockExtractionProvider,
     ProblemExtractor,
+    build_problem_extraction_provider,
 )
 from src.extraction.schemas import ExtractedProblem
 from src.ingestion.schemas import SourceSubmission
@@ -125,7 +125,9 @@ class DiscoveryService:
         )
         return DiscoveryResult(stored, extraction, accepted, False, assignment, score)
 
-    def process_many(self, submissions: list[SourceSubmission]) -> list[DiscoveryResult]:
+    def process_many(
+        self, submissions: list[SourceSubmission]
+    ) -> list[DiscoveryResult]:
         """Process a batch of normalized submissions in order."""
 
         return [self.process(submission) for submission in submissions]
@@ -149,7 +151,7 @@ class DiscoveryService:
 def build_discovery_service(session: Session, settings: Settings) -> DiscoveryService:
     """Build the default workflow with configuration-driven dependencies."""
 
-    extractor = ProblemExtractor(DeterministicMockExtractionProvider())
+    extractor = ProblemExtractor(build_problem_extraction_provider(settings))
     clusterer = IncrementalClusterer(
         session,
         build_embedding_provider(settings),

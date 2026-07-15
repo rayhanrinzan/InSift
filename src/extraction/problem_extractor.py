@@ -9,8 +9,10 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from src.config import Settings
 from src.extraction.prompts import PROBLEM_EXTRACTION_PROMPT
 from src.extraction.schemas import ExtractedProblem, PainType
+from src.providers.openai import OpenAIClient, OpenAIProviderError
 
 
 class ExtractionError(RuntimeError):
@@ -22,6 +24,77 @@ class ProblemExtractionProvider(Protocol):
 
     def extract_problem(self, text: str, prompt: str) -> Any:
         """Return an ExtractedProblem, mapping, or JSON string."""
+
+
+NULLABLE_STRING_SCHEMA = {
+    "anyOf": [{"type": "string"}, {"type": "null"}],
+}
+
+EXTRACTED_PROBLEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "contains_real_problem": {"type": "boolean"},
+        "problem_statement": NULLABLE_STRING_SCHEMA,
+        "affected_user": NULLABLE_STRING_SCHEMA,
+        "current_workaround": NULLABLE_STRING_SCHEMA,
+        "pain_types": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "time",
+                    "labor",
+                    "cost",
+                    "lost_revenue",
+                    "risk",
+                    "compliance",
+                    "coordination",
+                    "data_entry",
+                    "poor_user_experience",
+                    "lack_of_visibility",
+                    "integration",
+                    "repetitive_work",
+                ],
+            },
+        },
+        "severity_score": {"type": "number"},
+        "frequency_signal": {"type": "number"},
+        "willingness_to_pay_score": {"type": "number"},
+        "evidence_quote": NULLABLE_STRING_SCHEMA,
+        "confidence": {"type": "number"},
+    },
+    "required": [
+        "contains_real_problem",
+        "problem_statement",
+        "affected_user",
+        "current_workaround",
+        "pain_types",
+        "severity_score",
+        "frequency_signal",
+        "willingness_to_pay_score",
+        "evidence_quote",
+        "confidence",
+    ],
+}
+
+
+class OpenAIProblemExtractionProvider:
+    """Use OpenAI structured output for evidence-grounded extraction."""
+
+    def __init__(self, client: OpenAIClient) -> None:
+        self.client = client
+
+    def extract_problem(self, text: str, prompt: str) -> dict[str, Any]:
+        try:
+            return self.client.structured_response(
+                schema_name="extracted_problem",
+                schema=EXTRACTED_PROBLEM_SCHEMA,
+                instructions=prompt,
+                input_text=f"SOURCE DISCUSSION:\n{text}",
+            )
+        except OpenAIProviderError as exc:
+            raise ExtractionError(str(exc)) from exc
 
 
 EVIDENCE_PHRASES = (
@@ -100,13 +173,19 @@ class ProblemExtractor:
             try:
                 payload = json.loads(candidate)
             except json.JSONDecodeError as exc:
-                raise ExtractionError("The extraction provider returned invalid JSON.") from exc
+                raise ExtractionError(
+                    "The extraction provider returned invalid JSON."
+                ) from exc
         if not isinstance(payload, Mapping):
-            raise ExtractionError("The extraction provider returned an unsupported response.")
+            raise ExtractionError(
+                "The extraction provider returned an unsupported response."
+            )
         try:
             return ExtractedProblem.parse_obj(payload)
         except ValidationError as exc:
-            raise ExtractionError("The extraction response did not match the schema.") from exc
+            raise ExtractionError(
+                "The extraction response did not match the schema."
+            ) from exc
 
 
 PAIN_PATTERNS: dict[PainType, tuple[str, ...]] = {
@@ -148,14 +227,22 @@ class DeterministicMockExtractionProvider:
         if any(marker in normalized for marker in ("lose money", "missed", "risk")):
             severity = min(0.95, severity + 0.12)
         frequency = 0.2
-        if any(marker in normalized for marker in ("every day", "every week", "always")):
+        if any(
+            marker in normalized for marker in ("every day", "every week", "always")
+        ):
             frequency = 0.75
-        elif any(marker in normalized for marker in ("repetitive", "tedious", "currently")):
+        elif any(
+            marker in normalized for marker in ("repetitive", "tedious", "currently")
+        ):
             frequency = 0.5
         willingness = 0.1
-        if any(marker in normalized for marker in ("currently pay", "we pay", "expensive")):
+        if any(
+            marker in normalized for marker in ("currently pay", "we pay", "expensive")
+        ):
             willingness = 0.65
-        elif any(marker in normalized for marker in ("lose money", "lost revenue", "overpay")):
+        elif any(
+            marker in normalized for marker in ("lose money", "lost revenue", "overpay")
+        ):
             willingness = 0.5
 
         return ExtractedProblem(
@@ -222,3 +309,24 @@ class DeterministicMockExtractionProvider:
             if marker in normalized:
                 return f"Uses {marker} according to the source text"
         return None
+
+
+def build_problem_extraction_provider(settings: Settings) -> ProblemExtractionProvider:
+    """Build an explicitly configured extraction provider."""
+
+    provider = (settings.llm_provider or "").lower()
+    if settings.demo_mode or provider == "mock":
+        return DeterministicMockExtractionProvider()
+    if provider == "openai":
+        if not settings.llm_api_key:
+            raise ExtractionError("LLM_API_KEY is required for OpenAI extraction.")
+        return OpenAIProblemExtractionProvider(
+            OpenAIClient(
+                settings.llm_api_key.get_secret_value(),
+                model=settings.llm_model,
+                base_url=settings.openai_base_url,
+            )
+        )
+    raise ExtractionError(
+        "Configure LLM_PROVIDER=openai with an API key, or enable demo mode."
+    )
