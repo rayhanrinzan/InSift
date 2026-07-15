@@ -12,7 +12,11 @@ from sqlalchemy.orm import sessionmaker
 from src.config import get_settings
 from src.database.models import EvidenceItem
 from src.database.repositories import EvidenceRepository
-from src.database.session import create_database_engine, create_session_factory
+from src.database.session import (
+    create_database_engine,
+    create_session_factory,
+    initialize_database,
+)
 from src.services.opportunity_service import (
     DashboardMetrics,
     OpportunityService,
@@ -69,10 +73,12 @@ def _evidence_summary(item: EvidenceItem) -> EvidenceSummary:
 
 @st.cache_resource(show_spinner=False)
 def get_ui_session_factory(database_url: str) -> sessionmaker:
-    """Reuse one SQLAlchemy engine and session factory per database URL."""
+    """Initialize and reuse one engine and session factory per database URL."""
 
     settings = get_settings().copy(update={"database_url": database_url})
-    return create_session_factory(create_database_engine(settings))
+    engine = create_database_engine(settings)
+    initialize_database(engine)
+    return create_session_factory(engine)
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)

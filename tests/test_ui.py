@@ -4,6 +4,7 @@ import pytest
 
 from src.ui.components import fact_block_html, paginate_items, score_bar_html
 from src.ui.components import status_badge_html
+from src.ui.data import get_ui_session_factory
 
 
 def test_pagination_returns_requested_slice() -> None:
@@ -57,3 +58,18 @@ def test_fact_block_escapes_values_and_uses_fallback() -> None:
 
     assert "&lt;Unknown&gt;" in fact
     assert "<Unknown>" not in fact
+
+
+def test_ui_session_factory_initializes_a_fresh_database(tmp_path) -> None:
+    get_ui_session_factory.clear()
+    database_url = f"sqlite:///{tmp_path / 'fresh.db'}"
+
+    SessionFactory = get_ui_session_factory(database_url)
+    with SessionFactory() as session:
+        table_names = set(
+            session.get_bind().dialect.get_table_names(session.connection())
+        )
+
+    assert "evidence_items" in table_names
+    assert "opportunity_clusters" in table_names
+    get_ui_session_factory.clear()

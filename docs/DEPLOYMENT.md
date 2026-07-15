@@ -77,7 +77,7 @@ Do not run the demo seed script in a production database unless deterministic sa
 3. Select Python 3.11 in Advanced settings.
 4. Add root-level values in the app's secrets settings for `DATABASE_URL`, provider names, model names, API keys, and Reddit OAuth credentials. Root-level Streamlit secrets are exposed as environment variables.
 5. Use a hosted PostgreSQL URL. The local SQLite filesystem is not durable across redeployments.
-6. Run `alembic upgrade head` against the production database before the first application start and after schema migrations.
+6. FlowSift AI creates the current schema automatically for an empty database. Run `alembic upgrade head` before deployment when upgrading an existing production database.
 
 ## Production Checklist
 
