@@ -259,7 +259,7 @@ def _live_extraction_ready(settings: Settings) -> bool:
 
 
 def _live_search_ready(settings: Settings) -> bool:
-    return settings.public_search_ready
+    return not settings.demo_mode
 
 
 def _live_scout_ready(settings: Settings) -> bool:

@@ -576,7 +576,12 @@ def main() -> None:
             set_flash("Scores recomputed from the latest stored evidence.")
             st.rerun()
 
-        research_ready = settings.research_ready and settings.llm_ready
+        research_ready = bool(
+            not settings.demo_mode
+            and (settings.search_provider or "").lower() == "tavily"
+            and settings.search_api_key
+            and settings.llm_ready
+        )
         if research.button(
             "Research competitors",
             use_container_width=True,

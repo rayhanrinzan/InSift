@@ -72,7 +72,7 @@ def main() -> None:
         not settings.demo_mode and settings.discovery_ready
     )
     live_embedding_ready = bool(not settings.demo_mode and settings.embedding_ready)
-    live_search_ready = settings.public_search_ready
+    live_search_ready = not settings.demo_mode
     llm, embeddings, search, reddit = st.columns(4)
     with llm:
         _provider_status("Extraction", live_extraction_ready)
