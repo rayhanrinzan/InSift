@@ -79,6 +79,8 @@ Do not run the demo seed script in a production database unless deterministic sa
 5. Use a hosted PostgreSQL URL. The local SQLite filesystem is not durable across redeployments.
 6. FlowSift AI creates the current schema automatically for an empty database. Run `alembic upgrade head` before deployment when upgrading an existing production database.
 
+The committed Streamlit configuration keeps the server in headless mode so Community Cloud can start without waiting for the local onboarding email prompt.
+
 ## Production Checklist
 
 - Set `APP_ENV=production` and `DEMO_MODE=false`.
