@@ -12,6 +12,7 @@ from src.database.repositories import (
     FeedbackRepository,
     ScoreRepository,
 )
+from src.services.opportunity_service import OpportunityService
 
 
 def test_evidence_creation(db_session: Session) -> None:
@@ -56,6 +57,46 @@ def test_cluster_creation_and_evidence_linking(db_session: Session) -> None:
     assert refreshed.independent_author_count == 1
     assert refreshed.independent_source_count == 1
     assert refreshed.evidence_links[0].similarity_score == 0.95
+
+
+def test_user_facing_reads_hide_placeholder_sources(db_session: Session) -> None:
+    evidence_repo = EvidenceRepository(db_session)
+    cluster_repo = ClusterRepository(db_session)
+    placeholder_cluster = cluster_repo.create(
+        title="Fake spreadsheet workflow",
+        problem_summary="This record came from placeholder data.",
+    )
+    for index, source_url in enumerate(
+        (
+            "https://community.example/problem-one",
+            "https://issues.example/problem-two",
+        )
+    ):
+        evidence = evidence_repo.create(
+            platform="web",
+            source_external_id=f"placeholder-{index}",
+            source_url=source_url,
+            raw_text="Placeholder discussion",
+            contains_problem=True,
+        )
+        cluster_repo.link_evidence(placeholder_cluster.id, evidence.id, 0.9)
+
+    manual = evidence_repo.create(
+        platform="manual",
+        source_external_id="manual-real-input",
+        raw_text="A user supplied this discussion directly.",
+        contains_problem=True,
+    )
+
+    assert evidence_repo.count() == 3
+    assert evidence_repo.count_visible() == 1
+    assert evidence_repo.list_visible_recent(limit=10) == [manual]
+    assert cluster_repo.list_promoted(limit=10) == []
+
+    metrics = OpportunityService(db_session).dashboard_metrics()
+    assert metrics.evidence_count == 1
+    assert metrics.cluster_count == 0
+    assert OpportunityService(db_session).ranked_opportunities(limit=10) == []
 
 
 def test_competitor_persistence(db_session: Session) -> None:
