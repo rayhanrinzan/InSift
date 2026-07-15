@@ -64,7 +64,8 @@ def test_automated_queries_use_broad_unquoted_terms() -> None:
     query = build_problem_query(segment)
 
     assert "patient referral follow-up" not in query
-    assert segment.search_terms in query
+    assert "clinic operations" in query
+    assert segment.search_terms not in query
     assert "site:" not in query
     assert len(query) < 400
 

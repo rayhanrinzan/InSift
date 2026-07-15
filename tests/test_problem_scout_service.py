@@ -322,3 +322,92 @@ def test_scout_rejects_real_but_off_workflow_discussions(
     assert [outcome.source.evidence.url for outcome in run.outcomes] == [
         "https://www.reddit.com/r/ecommerce/comments/orders/tracking_email_work/"
     ]
+
+
+def test_scout_accepts_one_concrete_workflow_anchor_with_first_hand_pain(
+    db_session: Session,
+) -> None:
+    provider = StaticLiveSearchProvider(
+        [
+            SearchResult(
+                title="Automating my interview scheduling workflow using Excel",
+                url=(
+                    "https://www.reddit.com/r/recruiting/comments/scheduling/"
+                    "manual_interview_calendar/"
+                ),
+                snippet=(
+                    "Hi everyone! I'm a recruiter handling end-to-end interview "
+                    "scheduling, and I need help improving this workflow."
+                ),
+                score=0.91,
+            )
+        ]
+    )
+
+    run = ProblemScoutService(
+        provider,
+        _discovery(db_session),
+        DeterministicOpportunitySynthesizer(),
+    ).run(focus="people_ops", segment_limit=1, results_per_segment=1)
+
+    assert len(run.outcomes) == 1
+    assert run.accepted_count == 1
+
+
+def test_scout_rejects_comparison_landing_pages(db_session: Session) -> None:
+    provider = StaticLiveSearchProvider(
+        [
+            SearchResult(
+                title="Compare Lever vs 100Hires 2026 | Capterra",
+                url="https://www.capterra.com/compare/142452-206957/Lever-vs-100Hires",
+                snippet=(
+                    "I'm a recruiter and interview scheduling is manual, "
+                    "frustrating, and takes hours every week."
+                ),
+                score=0.94,
+            )
+        ]
+    )
+
+    run = ProblemScoutService(
+        provider,
+        _discovery(db_session),
+        DeterministicOpportunitySynthesizer(),
+    ).run(focus="people_ops", segment_limit=1, results_per_segment=1)
+
+    assert run.outcomes == ()
+    assert ClusterRepository(db_session).list(limit=10) == []
+
+
+def test_scout_does_not_treat_follow_up_alone_as_operational_pain(
+    db_session: Session,
+) -> None:
+    provider = StaticLiveSearchProvider(
+        [
+            SearchResult(
+                title="Still waiting for my offer",
+                url=(
+                    "https://www.reddit.com/r/jobs/comments/waiting/"
+                    "offer_follow_up/"
+                ),
+                snippet=(
+                    "My recruiter said she will follow up with me. I still have "
+                    "not received the offer."
+                ),
+                score=0.90,
+            )
+        ]
+    )
+
+    run = ProblemScoutService(
+        provider,
+        _discovery(db_session),
+        DeterministicOpportunitySynthesizer(),
+    ).run(
+        focus="people_ops",
+        segment_limit=1,
+        results_per_segment=1,
+        scan_round=3,
+    )
+
+    assert run.outcomes == ()

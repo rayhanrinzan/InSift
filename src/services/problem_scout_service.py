@@ -173,13 +173,31 @@ SCOUT_RELEVANCE_TERMS: dict[str, tuple[str, ...]] = {
     "regulated-businesses": ("compliance", "regulated", "audit", "regulation"),
 }
 
+SCOUT_QUERY_ANCHORS: dict[str, str] = {
+    "clinic-operations": "clinic operations",
+    "accounting-firms": "accounting firm",
+    "property-management": "property management",
+    "ecommerce-operations": "ecommerce operations",
+    "recruiting-teams": "recruiting",
+    "therapy-practices": "therapy practice",
+    "marketing-agencies": "marketing agency",
+    "construction-teams": "construction project management",
+    "distributors": "wholesale distribution",
+    "small-hr-teams": "HR operations",
+    "insurance-brokers": "insurance agency",
+    "field-service-businesses": "field service business",
+    "manufacturers": "manufacturing operations",
+    "dental-practices": "dental practice",
+    "regulated-businesses": "small business compliance",
+}
+
 SCOUT_SEARCH_LENSES: tuple[str, ...] = (
-    "manual takes hours frustrating reddit",
-    "spreadsheet repetitive errors forum",
-    "scaling backlog overwhelmed reddit",
-    "copy paste missed follow up workaround",
-    "expensive software still doing work manually review",
-    "tracking coordination wish there was a better way forum",
+    "manual frustrating",
+    "takes hours spreadsheet",
+    "backlog overwhelmed",
+    "manual spreadsheet",
+    "takes hours spreadsheet",
+    "manual repetitive",
 )
 
 SCOUT_WORKFLOW_TOPICS: dict[str, tuple[str, ...]] = {
@@ -209,7 +227,7 @@ SCOUT_WORKFLOW_TOPICS: dict[str, tuple[str, ...]] = {
     ),
     "recruiting-teams": (
         "interview feedback reminders",
-        "candidate scheduling",
+        "interview scheduling",
         "applicant screening backlog",
         "offer approval coordination",
     ),
@@ -321,9 +339,13 @@ OPERATIONAL_PAIN_MARKERS = (
     "errors",
     "expensive",
     "slow",
-    "tracking",
-    "follow-up",
-    "follow up",
+    "frustrating",
+    "struggling",
+    "difficult",
+    "painful",
+    "tedious",
+    "annoying",
+    "broken",
 )
 SOLICITATION_MARKERS = (
     "doing some research",
@@ -363,7 +385,10 @@ class SourcedDiscussion:
             "scout_segment": self.segment.key,
             "scout_segment_label": self.segment.label,
         }
-        return submission.copy(update={"metadata_json": metadata})
+        source_text = f"{self.evidence.title}. {submission.raw_text}"[:20_000]
+        return submission.copy(
+            update={"raw_text": source_text, "metadata_json": metadata}
+        )
 
 
 @dataclass(frozen=True)
@@ -472,7 +497,7 @@ def build_problem_query(
     lens = SCOUT_SEARCH_LENSES[
         ((scan_round * 2) + attempt) % len(SCOUT_SEARCH_LENSES)
     ]
-    query = f"{segment.search_terms} {topic} {lens}"
+    query = f"{SCOUT_QUERY_ANCHORS[segment.key]} {topic} {lens} reddit"
     return " ".join(query.split())
 
 
@@ -497,29 +522,38 @@ def _matches_segment(
 
 
 def _matches_workflow(evidence: WebEvidenceCandidate, topic: str) -> bool:
-    """Require a result to mention multiple terms from the searched workflow."""
+    """Match a concrete workflow term alongside an operational pain signal."""
 
     text = " ".join((evidence.title, evidence.snippet[:1_200])).lower()
-    text_terms = {
-        token[:-1] if token.endswith("s") and len(token) > 4 else token
-        for token in re.findall(r"[a-z0-9]+", text)
-    }
     topic_terms = {
         (token[:-1] if token.endswith("s") and len(token) > 4 else token)
         for token in re.findall(r"[a-z0-9]+", topic.lower())
         if len(token) >= 4 and token not in GENERIC_WORKFLOW_TERMS
     }
-    required_matches = min(2, len(topic_terms))
-    if len(topic_terms & text_terms) < required_matches:
-        return False
     for passage in re.split(r"(?<=[.!?])\s+", text):
         passage_terms = {
             token[:-1] if token.endswith("s") and len(token) > 4 else token
             for token in re.findall(r"[a-z0-9]+", passage)
         }
-        if len(topic_terms & passage_terms) >= required_matches:
+        if topic_terms & passage_terms and any(
+            marker in passage for marker in OPERATIONAL_PAIN_MARKERS
+        ):
             return True
     return False
+
+
+def _is_scoutable_discussion(evidence: WebEvidenceCandidate) -> bool:
+    """Exclude search landing pages that are not first-person evidence."""
+
+    parsed = urlsplit(evidence.url)
+    path = parsed.path.lower()
+    title = evidence.title.lower()
+    if "/compare/" in path:
+        return False
+    return not (
+        title.startswith("compare ")
+        or "pricing, alternatives & more" in title
+    )
 
 
 def _contains_first_hand_problem(evidence: WebEvidenceCandidate) -> bool:
@@ -541,7 +575,7 @@ def _contains_first_hand_problem(evidence: WebEvidenceCandidate) -> bool:
         return True
     first_hand = any(marker in padded for marker in FIRST_HAND_MARKERS)
     pain_signal_count = sum(marker in padded for marker in FIRST_HAND_PAIN_MARKERS)
-    return first_hand and pain_signal_count >= 2
+    return first_hand and pain_signal_count >= 1
 
 
 class ProblemScoutService:
@@ -681,6 +715,8 @@ class ProblemScoutService:
                     if not is_public_source_url(evidence.url):
                         continue
                     if not is_supported_discussion_url(evidence.url):
+                        continue
+                    if not _is_scoutable_discussion(evidence):
                         continue
                     if not _matches_segment(evidence, segment):
                         continue
