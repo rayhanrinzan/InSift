@@ -103,12 +103,7 @@ class Settings(BaseSettings):
 
     @property
     def live_ready(self) -> bool:
-        return bool(
-            not self.demo_mode
-            and self.discovery_ready
-            and self.search_ready
-            and self.reddit_ready
-        )
+        return bool(not self.demo_mode and self.discovery_ready and self.search_ready)
 
     class Config:
         env_file = ".env"
