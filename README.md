@@ -1,41 +1,344 @@
 # InSift
 
-InSift is a production-minded MVP for discovering evidence-backed startup opportunities from online discussions. It is designed to connect every opportunity to real user pain, cluster similar problems, research competitors, and rank opportunities with explainable scores.
+InSift turns evidence from real online discussions into ranked, explainable startup opportunities. It collects problem statements, clusters related pain points, researches competitors, scores market gaps, and keeps every conclusion connected to its source evidence.
 
-This repository implements Phases 1-8: the project foundation, ingestion, evidence-grounded extraction, semantic clustering, competitor research, researched white-space scoring, ranked opportunities, auditable user corrections, and production-minded application polish.
+## Run InSift Now
 
-## Main Features
+Run commands from the repository root, the folder containing `streamlit_app.py`.
 
-- Typed settings loaded from environment variables or `.env`
-- Structured JSON logging without API key leakage
-- SQLAlchemy models for evidence, clusters, competitors, scores, and user feedback
-- SQLite local development database with PostgreSQL-ready configuration
-- Alembic migration support
-- Repository layer for database persistence
-- Deterministic demo seed data
-- Manual, CSV, Reddit URL, subreddit, and keyword ingestion with duplicate protection
-- Bounded Reddit OAuth collection with source attribution and configurable limits
-- Deterministic evidence pre-filter and OpenAI structured problem extraction
-- Offline mock extraction that works without an API key
-- OpenAI and local Sentence Transformers embeddings, plus deterministic demo embeddings
-- Incremental cosine-similarity clustering with recomputed centroids
-- Evidence-backed cluster summaries with source and author independence counts
-- Explainable Problem, Opportunity, and Confidence scores
-- Broad competitor-query generation with every query stored for auditability
-- Tavily search integration with bounded retries and deterministic mock search
-- OpenAI structured direct, adjacent, substitute, and irrelevant classification
-- Deduplicated competitor persistence with source snippets and reasoning
-- Five-component White-Space Score based on need, differentiation, weaknesses, niche, and density
-- Evidence, customer, and competitor corrections with feedback history
-- Cluster merge and split workflows with automatic score recomputation
-- Ranked and filterable Streamlit opportunity views with evidence drill-down
-- Responsive page shell with consistent navigation and operational status
-- Paginated opportunity, evidence, competitor, query, and feedback views
-- Cached read models with automatic invalidation after writes
-- Loading states and live progress for ingestion, scoring, and competitor research
-- Actionable database and provider error messages without credential exposure
-- Docker packaging, health checks, and PostgreSQL deployment guidance
-- Pytest coverage for ingestion, extraction, clustering, scoring, and persistence
+```bash
+cd /path/to/InSift
+bash scripts/run_app.sh
+```
+
+The launcher:
+
+1. Uses `INSIFT_PYTHON` when you explicitly provide one.
+2. Uses `/opt/anaconda3/bin/python` on the Mac where this project was built.
+3. Falls back to `python3` on other machines.
+4. Creates `.env` from `.env.example` when needed.
+5. Initializes the configured database safely.
+6. Starts the Streamlit application.
+
+Open [http://localhost:8501](http://localhost:8501) when the terminal prints the Local URL. Keep that terminal open while using InSift. Press `Control+C` in the terminal to stop the app.
+
+The project-local `.venv` in the original macOS checkout was offloaded by macOS and can stall while importing packages. The launcher deliberately uses the working Anaconda Python on that machine. Do not activate that `.venv`.
+
+To use another Python installation or another port:
+
+```bash
+INSIFT_PYTHON=/path/to/python bash scripts/run_app.sh --server.port 8502
+```
+
+## What "Fully Live" Means
+
+The web server can run without provider credentials, but real extraction, semantic clustering, web research, and Reddit collection require external API access.
+
+InSift is fully live when the **Settings** page shows all four readiness badges as **Ready**:
+
+- **Extraction:** OpenAI is configured.
+- **Embeddings:** OpenAI embeddings or local Sentence Transformers are configured.
+- **Research:** Tavily is configured.
+- **Reddit:** approved Reddit OAuth credentials are configured.
+
+An empty live database is normal. Opportunities appear only after InSift processes evidence.
+
+## Fully Launch the Product
+
+### 1. Obtain provider credentials
+
+You need:
+
+- An [OpenAI API key](https://platform.openai.com/api-keys) for structured problem extraction and competitor classification.
+- A [Tavily API key](https://app.tavily.com) for web competitor research.
+- An approved [Reddit developer application](https://developers.reddit.com/app-registration) with a client ID and client secret for Reddit collection.
+
+Reddit may require application review or approval. Manual paste and CSV ingestion still work without Reddit after OpenAI is ready.
+
+Never commit API keys. InSift stores locally entered credentials in the ignored `.env` file.
+
+### 2. Start the application
+
+```bash
+bash scripts/run_app.sh
+```
+
+Then open [http://localhost:8501](http://localhost:8501).
+
+### 3. Configure live mode in Settings
+
+Open **Settings** in the left navigation and set:
+
+| Setting | Live value |
+| --- | --- |
+| Environment | `production` |
+| Demo mode | Off |
+| LLM provider | `openai` |
+| LLM model | `gpt-5.6-luna` |
+| OpenAI API key | Your OpenAI API key |
+| Embedding provider | `openai` |
+| Embedding model | `text-embedding-3-small` |
+| Search provider | `tavily` |
+| Tavily API key | Your Tavily API key |
+| Reddit client ID | Your approved OAuth client ID |
+| Reddit client secret | Your approved OAuth client secret |
+| Reddit user agent | A descriptive value naming InSift and its operator |
+
+Leave the database as `sqlite:///insift_live.db` for a local live launch. Click **Save configuration**.
+
+The default OpenAI model is the cost-sensitive GPT-5.6 variant. OpenAI embeddings use `text-embedding-3-small`, which is intended for tasks including clustering and similarity search.
+
+### 4. Restart after changing configuration
+
+Press `Control+C` in the terminal and launch again:
+
+```bash
+bash scripts/run_app.sh
+```
+
+The launcher initializes whichever database is named in `.env` before starting the server. Return to **Settings** and confirm every provider you intend to use says **Ready**.
+
+### 5. Create the first real opportunity
+
+1. Open **Discover**.
+2. Choose **Paste discussion**.
+3. Paste a genuine first-person complaint or workflow description. Concrete evidence works best, such as time lost, repetitive work, expensive software, missed revenue, spreadsheet workarounds, or requests for a better tool.
+4. Optionally add the title, source URL, author, and community. Source metadata improves traceability and confidence.
+5. Click **Extract and score**.
+6. Review whether the evidence was accepted or rejected in **Extraction review**.
+7. Open **Opportunities** to see the resulting cluster and scores.
+8. Open the opportunity, then click **Research competitors** to run Tavily search and OpenAI classification.
+9. Inspect **Evidence**, **Competitors**, and **Scoring** before treating the opportunity as validated.
+
+## How to Use Every Page
+
+### Overview
+
+Use **Overview** for the operating snapshot:
+
+- Evidence item count
+- Opportunity cluster count
+- Researched opportunity count
+- Research coverage
+- Highest-ranked opportunities
+- Recent ingestion activity
+
+Click an opportunity title to open its full details.
+
+### Discover
+
+Use **Discover** to add source evidence.
+
+**Paste discussion** processes one source at a time. Include source metadata whenever it is available.
+
+**Reddit** supports:
+
+- A Reddit post URL
+- A subreddit name
+- Keyword search with an optional subreddit filter
+
+Reddit collection is capped at 100 items per request. Collection requires approved Reddit OAuth credentials and should comply with Reddit's policies.
+
+**Upload CSV** processes a bounded batch. The CSV must contain one of these text columns:
+
+```text
+raw_text
+text
+body
+discussion
+content
+```
+
+Optional columns include `source_url`, `title`, `source_author`, and `community`.
+
+The **Extraction review** section separates accepted evidence from rejected text. Rejected text remains reviewable but is not clustered or scored.
+
+### Opportunities
+
+Use **Opportunities** to compare and prioritize clusters. You can:
+
+- Filter by status, target customer, pain type, research state, and minimum scores.
+- Sort by opportunity, problem, white-space, confidence, evidence count, or update time.
+- Change rows per page.
+- Open any opportunity for evidence and competitor inspection.
+
+Treat **Opportunity Score** and **Confidence Score** separately. A promising score with low confidence means more independent evidence is needed.
+
+### Opportunity Details
+
+Use **Opportunity Details** to validate and correct one cluster.
+
+- **Recompute scores** recalculates scores from stored evidence and competitor data.
+- **Research competitors** runs live Tavily searches and classifies results with OpenAI.
+- **Overview** summarizes the customer, problem, workaround, and proposed solution.
+- **Evidence** shows source text and attribution.
+- **Competitors** separates direct, adjacent, substitute, and irrelevant results.
+- **Scoring** explains each score component.
+- **Corrections** lets you correct customer labels, evidence fields, and competitor relationships, or merge and split clusters.
+- **History** shows stored search queries and the correction audit trail.
+
+Corrections are recorded as feedback instead of silently overwriting the history.
+
+### Settings
+
+Use **Settings** to:
+
+- See database and provider readiness.
+- Switch between demo and live mode.
+- Save provider credentials locally.
+- Select OpenAI, embedding, and search models.
+- Change the database URL and scoring thresholds.
+- Clear cached views after an external database change.
+
+Password fields never display stored keys. Leaving a password field blank preserves its existing value unless the corresponding **Clear stored** checkbox is selected.
+
+## Demo Mode
+
+Demo mode is useful for learning the complete workflow without external API costs. Set `DEMO_MODE=true` in `.env`, then run:
+
+```bash
+/opt/anaconda3/bin/python scripts/initialize_database.py
+/opt/anaconda3/bin/python scripts/seed_demo_data.py
+bash scripts/run_app.sh
+```
+
+The seed script is safe to run repeatedly and avoids duplicate demo evidence and competitors.
+
+To return to the live product, open **Settings**, turn **Demo mode** off, restore `sqlite:///insift_live.db`, save, and restart the launcher.
+
+## First-Time Installation on Another Machine
+
+Requirements: Python 3.11 or newer and network access for package installation.
+
+Create the virtual environment outside cloud-synced folders so macOS does not offload package files:
+
+```bash
+python3.11 -m venv ~/.virtualenvs/insift
+source ~/.virtualenvs/insift/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+cp .env.example .env
+INSIFT_PYTHON="$HOME/.virtualenvs/insift/bin/python" bash scripts/run_app.sh
+```
+
+## Daily Start and Stop
+
+Start:
+
+```bash
+cd /path/to/InSift
+bash scripts/run_app.sh
+```
+
+Stop: press `Control+C` in the terminal running Streamlit.
+
+Restart after code or environment changes: stop the process, then run `bash scripts/run_app.sh` again.
+
+## Troubleshooting
+
+### The command prints nothing
+
+Do not use the offloaded project `.venv`. Press `Control+C`, then run:
+
+```bash
+bash scripts/run_app.sh
+```
+
+The launcher should print the initialized database, selected Python path, and Streamlit Local URL.
+
+### Port 8501 is already in use
+
+The app may already be running. Open [http://localhost:8501](http://localhost:8501), or start another instance:
+
+```bash
+bash scripts/run_app.sh --server.port 8502
+```
+
+Then open [http://localhost:8502](http://localhost:8502).
+
+### The app opens but has no opportunities
+
+Live databases begin empty. Configure OpenAI, submit evidence through **Discover**, and then open **Opportunities**. Demo records are loaded only by `scripts/seed_demo_data.py`.
+
+### Discover or Research buttons are disabled
+
+Open **Settings** and inspect the readiness badges:
+
+- Discover requires extraction and embeddings.
+- Competitor research requires extraction and search.
+- Reddit collection additionally requires Reddit OAuth.
+
+### A provider says Setup required
+
+Confirm the provider is selected and its key is saved. Restart the app after changing `.env`. InSift checks whether credentials are configured; the first real request also verifies whether the provider accepts them.
+
+### Check whether the server is healthy
+
+```bash
+curl http://localhost:8501/_stcore/health
+```
+
+A healthy server returns `ok`.
+
+## Scoring
+
+InSift stores versioned score records with structured explanations.
+
+```text
+Problem Score = 35% Pain Severity + 25% Problem Frequency
+              + 20% Willingness to Pay + 20% Evidence Quality
+
+White-Space Score = 30% Unmet Customer Need
+                  + 25% Differentiation Potential
+                  + 20% Competitor Weakness
+                  + 15% Niche Specificity
+                  + 10% Low Direct-Competitor Density
+
+Opportunity Score = 25% Pain Severity + 15% Problem Frequency
+                  + 15% Willingness to Pay + 10% Evidence Quality
+                  + 15% White-Space + 10% Build Feasibility
+                  + 10% Market Accessibility
+```
+
+Before competitor research, white-space is neutral. Missing search results are never treated as proof of an attractive market gap. Confidence is separate from opportunity quality and reflects evidence independence, extraction confidence, recency, agreement, and research coverage.
+
+## Command-Line Operations
+
+Ingest one discussion:
+
+```bash
+/opt/anaconda3/bin/python scripts/ingest_sources.py \
+  --text "We still use Excel and this manual process takes hours every week."
+```
+
+Ingest and score a CSV:
+
+```bash
+/opt/anaconda3/bin/python scripts/ingest_sources.py --csv discussions.csv --max-rows 100
+/opt/anaconda3/bin/python scripts/score_opportunities.py
+```
+
+Run tests:
+
+```bash
+/opt/anaconda3/bin/python -m pytest
+```
+
+Run database migrations:
+
+```bash
+/opt/anaconda3/bin/python -m alembic upgrade head
+```
+
+## Deployment
+
+SQLite is appropriate for one local user. A hosted production deployment should use PostgreSQL, execute Alembic migrations before startup, and inject secrets through the hosting platform rather than `.env`.
+
+```bash
+docker build -t insift .
+```
+
+See [Deployment](docs/DEPLOYMENT.md) for Docker, PostgreSQL, Streamlit Community Cloud, health checks, and rollback instructions.
 
 ## Architecture
 
@@ -46,194 +349,28 @@ flowchart TD
     Services --> Repositories[Repository layer]
     Repositories --> Models[SQLAlchemy models]
     Models --> DB[(SQLite local / PostgreSQL production)]
-    Alembic[Alembic migrations] --> DB
     Reddit[Reddit OAuth] --> Services
-    Extractors[Mock / OpenAI structured output] --> Services
-    Embeddings[Demo hash / Sentence Transformers / OpenAI] --> Services
-    Search[Mock / Tavily search provider] --> Services
-    Corrections[Correction service + audit history] --> Services
+    OpenAI[OpenAI extraction and classification] --> Services
+    Embeddings[OpenAI or local embeddings] --> Services
+    Tavily[Tavily competitor search] --> Services
 ```
 
-## Data Pipeline
+## Data and Platform Safety
 
-```text
-Online discussions
-        ↓
-Evidence filtering
-        ↓
-Structured problem extraction
-        ↓
-Semantic clustering
-        ↓
-Opportunity generation
-        ↓
-Competitor research
-        ↓
-White-space analysis
-        ↓
-Explainable scoring
-        ↓
-Ranked opportunity dashboard
-```
+- Store API keys only in ignored `.env` files or managed secret stores.
+- Preserve source attribution and collect only the text needed for the product workflow.
+- Review each source platform's terms before commercial collection.
+- Do not use InSift as an unrestricted scraper.
+- Do not assume that no competitors found means a market is attractive.
 
-## Scoring Methodology
+## Current Limitations
 
-Scores are stored as versioned `OpportunityScore` records with structured explanations. Phases 4 and 6 calculate:
+- Reddit access depends on Reddit approving the intended data use and credentials.
+- SQLite is local and single-instance; hosted deployments need persistent PostgreSQL.
+- Build feasibility and market accessibility remain neutral until dedicated validation inputs are added.
+- Streamlit read caches are process-local with a 30-second TTL.
+- Tavily is the only live web search adapter currently implemented.
 
-- Problem Score from pain severity, frequency, willingness to pay, and evidence quality
-- White-Space Score from unmet need, differentiation, competitor weakness, niche specificity, and direct-competitor density
-- Opportunity Score from problem strength, white-space, feasibility, and accessibility
-- Confidence Score from source independence, extraction confidence, recency, agreement among sources, and available research coverage
+## Test Coverage
 
-```text
-Problem Score = 35% Pain Severity + 25% Problem Frequency
-              + 20% Willingness to Pay + 20% Evidence Quality
-
-Opportunity Score = 25% Pain Severity + 15% Problem Frequency
-                  + 15% Willingness to Pay + 10% Evidence Quality
-                  + 15% White-Space + 10% Build Feasibility
-                  + 10% Market Accessibility
-```
-
-Before research, white-space is neutral and explicitly labeled. After research, its five components are calculated from stored evidence, queries, competitor weaknesses, and supported gaps. Missing competitor results are never automatically rewarded. Build feasibility and market accessibility remain neutral pending dedicated validation.
-
-```text
-White-Space Score = 30% Unmet Customer Need
-                  + 25% Differentiation Potential
-                  + 20% Competitor Weakness
-                  + 15% Niche Specificity
-                  + 10% Low Direct-Competitor Density
-```
-
-The confidence score is intentionally separate from the opportunity score. A cluster may look promising while still having limited evidence.
-
-## Local Setup
-
-Run every command from the repository root, the directory containing `requirements.txt` and `streamlit_app.py`.
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-python scripts/initialize_database.py
-python scripts/seed_demo_data.py
-streamlit run streamlit_app.py
-```
-
-The app opens at `http://localhost:8501`. If that port is occupied, Streamlit selects another local port and prints it in the terminal.
-
-## Live Mode
-
-Live mode never silently falls back to deterministic providers. Open Settings in the running application and configure:
-
-- OpenAI API key and model for extraction and competitor classification
-- OpenAI or Sentence Transformers embeddings
-- Tavily API key for competitor research
-- Reddit OAuth client ID, client secret, and a descriptive user agent
-
-Settings are written to the ignored local `.env` file. Existing secret values are never displayed and blank password fields preserve the stored value. For a clean local live database, use `DATABASE_URL=sqlite:///insift_live.db`, set `APP_ENV=production` and `DEMO_MODE=false`, then run:
-
-```bash
-python scripts/initialize_database.py
-python -m streamlit run streamlit_app.py
-```
-
-OpenAI requests use strict structured JSON output and disable response storage for submitted source text. Hosted deployments should inject the same settings through their secret manager instead of the in-app local file.
-
-## Environment Variables
-
-```text
-APP_ENV=development
-LOG_LEVEL=INFO
-DATABASE_URL=sqlite:///insift.db
-LLM_PROVIDER=
-LLM_API_KEY=
-LLM_MODEL=gpt-5.6-luna
-OPENAI_BASE_URL=https://api.openai.com/v1
-EMBEDDING_PROVIDER=sentence_transformers
-EMBEDDING_MODEL=all-MiniLM-L6-v2
-SEARCH_PROVIDER=
-SEARCH_API_KEY=
-SEARCH_DEPTH=basic
-CLUSTER_SIMILARITY_THRESHOLD=0.78
-MINIMUM_EXTRACTION_CONFIDENCE=0.45
-MAX_SEARCH_RESULTS=10
-REDDIT_CLIENT_ID=
-REDDIT_CLIENT_SECRET=
-REDDIT_USER_AGENT=InSift/1.0 by configured-user
-DEMO_MODE=true
-```
-
-API keys should be stored in `.env` or deployment secrets. Do not commit them.
-
-## Demo Mode
-
-Demo mode is enabled by default. It uses deterministic extraction, embeddings, search results, and classification. The seed script inserts evidence, clusters, research queries, competitors, researched score breakdowns, and correction-ready records so the complete Phase 1-8 workflow can be explored without paid APIs.
-
-```bash
-python scripts/initialize_database.py
-python scripts/seed_demo_data.py
-streamlit run streamlit_app.py
-```
-
-The seed script is safe to run repeatedly; it avoids duplicating demo evidence and competitors.
-
-To ingest one discussion from the command line:
-
-```bash
-python scripts/ingest_sources.py --text "We still use Excel and this manual process takes hours every week."
-```
-
-To ingest a CSV, include one of `raw_text`, `text`, `body`, `discussion`, or `content` as a column:
-
-```bash
-python scripts/ingest_sources.py --csv discussions.csv --max-rows 100
-python scripts/score_opportunities.py
-```
-
-## Testing
-
-```bash
-pytest
-```
-
-Tests cover persistence, ingestion validation, OpenAI request and retry behavior, Reddit OAuth normalization, extraction failures, clustering boundaries, query generation, competitor classification and deduplication, researched white-space, confidence, corrections, merge/split behavior, audit history, and score recomputation.
-
-## Database Migrations
-
-```bash
-alembic upgrade head
-```
-
-For local development, `python scripts/initialize_database.py` can create tables directly from SQLAlchemy metadata. Production-style deployments should prefer Alembic migrations.
-
-## Deployment
-
-The repository includes a non-root Docker image, Streamlit health check, secret-safe build context, and a restrained application theme.
-
-```bash
-docker build -t insift .
-```
-
-Production deployments should use PostgreSQL, run `alembic upgrade head` as a release step, and provide API keys through a managed secret store. See [Deployment](docs/DEPLOYMENT.md) for Docker demo commands, PostgreSQL setup, Streamlit Community Cloud guidance, health checks, and rollback notes.
-
-## Known Limitations
-
-- Reddit ingestion requires formally approved OAuth credentials and intentionally caps each collection request at 100 items.
-- The deterministic demo embedding is intentionally small. Live mode can use OpenAI or the configured local Sentence Transformers model.
-- Merge operations archive the source cluster rather than deleting its historical scores and feedback.
-- Real search currently supports Tavily; Brave Search remains a future provider adapter.
-- Streamlit read caches are process-local with a 30-second TTL; horizontally scaled instances may briefly show different snapshots after a write.
-- SQLite is intended for local demos. Hosted deployments require a persistent PostgreSQL database.
-
-## Platform Data-Use Warning
-
-Do not build or operate InSift as an unrestricted Reddit scraper. Review each platform's terms before commercial use. The MVP should preserve source attribution, collect only necessary text, use formally permitted API access where available, and avoid using collected content for model training.
-
-## Future Roadmap
-
-1. Add a Brave Search adapter and more permitted source-specific ingestion adapters.
-2. Add richer feasibility and market-access validation inputs.
-3. Add authentication, workspaces, and role-aware correction approval.
-4. Add distributed cache invalidation and production tracing for multi-instance deployments.
+The suite covers persistence, ingestion validation, OpenAI structured output and retry behavior, Reddit normalization, extraction failures, clustering, competitor classification, researched white-space, confidence, corrections, merge and split behavior, audit history, and score recomputation.
