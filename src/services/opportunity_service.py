@@ -6,15 +6,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from src.database.models import (
-    ClusterEvidence,
     EvidenceItem,
-    OpportunityCluster,
     OpportunityScore,
 )
+from src.database.repositories import ClusterRepository, EvidenceRepository
+from src.ingestion.source_urls import is_placeholder_source_url
 
 
 @dataclass(frozen=True)
@@ -53,55 +52,26 @@ class OpportunityService:
     def dashboard_metrics(self) -> DashboardMetrics:
         """Return high-level dashboard counts."""
 
-        evidence_count = int(
-            self.session.scalar(select(func.count(EvidenceItem.id))) or 0
-        )
-        cluster_count = int(
-            self.session.scalar(
-                select(func.count(OpportunityCluster.id)).where(
-                    OpportunityCluster.status != "archived",
-                    OpportunityCluster.independent_source_count >= 2,
-                )
-            )
-            or 0
-        )
-        researched = int(
-            self.session.scalar(
-                select(func.count(OpportunityCluster.id)).where(
-                    OpportunityCluster.status == "researched",
-                    OpportunityCluster.independent_source_count >= 2,
-                )
-            )
-            or 0
-        )
+        promoted = ClusterRepository(self.session).list_promoted(limit=100_000)
         return DashboardMetrics(
-            evidence_count=evidence_count,
-            cluster_count=cluster_count,
-            researched_opportunity_count=researched,
+            evidence_count=EvidenceRepository(self.session).count_visible(),
+            cluster_count=len(promoted),
+            researched_opportunity_count=sum(
+                cluster.status == "researched" for cluster in promoted
+            ),
         )
 
     def ranked_opportunities(self, limit: int = 10) -> list[RankedOpportunity]:
         """Return clusters with their latest score, ordered by opportunity score."""
 
         rows: list[RankedOpportunity] = []
-        statement = (
-            select(OpportunityCluster)
-            .options(
-                selectinload(OpportunityCluster.scores),
-                selectinload(OpportunityCluster.evidence_links).selectinload(
-                    ClusterEvidence.evidence_item
-                ),
-                selectinload(OpportunityCluster.competitors),
-            )
-            .where(
-                OpportunityCluster.status != "archived",
-                OpportunityCluster.independent_source_count >= 2,
-            )
-            .order_by(OpportunityCluster.updated_at.desc())
-            .limit(limit)
-        )
-        clusters = list(self.session.execute(statement).scalars())
+        clusters = ClusterRepository(self.session).list_promoted(limit=limit)
         for cluster in clusters:
+            evidence_items = [
+                link.evidence_item
+                for link in cluster.evidence_links
+                if not is_placeholder_source_url(link.evidence_item.source_url)
+            ]
             latest_score = max(
                 cluster.scores,
                 key=lambda score: score.created_at,
@@ -113,7 +83,7 @@ class OpportunityService:
                     cluster_id=cluster.id,
                     title=cluster.title,
                     target_customer=cluster.target_customer,
-                    evidence_count=cluster.evidence_count,
+                    evidence_count=len({item.id for item in evidence_items}),
                     problem_score=self._problem_score(latest_score),
                     whitespace_score=(
                         latest_score.whitespace_score if latest_score else None
@@ -129,8 +99,8 @@ class OpportunityService:
                         sorted(
                             {
                                 pain
-                                for link in cluster.evidence_links
-                                for pain in (link.evidence_item.pain_types or [])
+                                for item in evidence_items
+                                for pain in (item.pain_types or [])
                             }
                         )
                     ),
@@ -150,10 +120,7 @@ class OpportunityService:
     def recent_evidence(self, limit: int = 5) -> list[EvidenceItem]:
         """Return recent evidence for dashboard activity."""
 
-        statement = (
-            select(EvidenceItem).order_by(EvidenceItem.collected_at.desc()).limit(limit)
-        )
-        return list(self.session.execute(statement).scalars())
+        return EvidenceRepository(self.session).list_visible_recent(limit=limit)
 
     @staticmethod
     def _problem_score(score: Optional[OpportunityScore]) -> Optional[float]:

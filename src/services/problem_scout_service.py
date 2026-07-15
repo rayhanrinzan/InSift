@@ -13,6 +13,7 @@ from src.extraction.opportunity_synthesizer import (
 )
 from src.ingestion.manual import IngestionError
 from src.ingestion.schemas import SourceSubmission
+from src.ingestion.source_urls import is_public_source_url
 from src.ingestion.web import (
     PAIN_SIGNALS,
     WebEvidenceCandidate,
@@ -371,7 +372,7 @@ class ProblemScoutService:
                 evidence = candidate_from_search_result(result, query=query)
                 if evidence is None:
                     continue
-                if not _is_public_source_url(evidence.url):
+                if not is_public_source_url(evidence.url):
                     continue
                 url_key = canonical_url(evidence.url)
                 if url_key in seen_urls:
@@ -482,7 +483,7 @@ class ProblemScoutService:
         seen_urls: set[str] = set()
         for link in cluster.evidence_links:
             item = link.evidence_item
-            if not item.source_url:
+            if not is_public_source_url(item.source_url):
                 continue
             url_key = canonical_url(item.source_url)
             if url_key in seen_urls:
@@ -519,14 +520,3 @@ class ProblemScoutService:
             synthesis_confidence=synthesis_confidence,
             sources=tuple(sources),
         )
-
-
-def _is_public_source_url(url: str) -> bool:
-    """Reject placeholder and local URLs from user-facing source discovery."""
-
-    host = (urlsplit(url).hostname or "").lower().rstrip(".")
-    if not host or host == "localhost" or host.endswith(".localhost"):
-        return False
-    if host in {"example.com", "example.net", "example.org"}:
-        return False
-    return not host.endswith((".example", ".invalid", ".test"))

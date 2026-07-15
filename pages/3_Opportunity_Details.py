@@ -20,6 +20,7 @@ from src.database.repositories import (
     ResearchRepository,
     ScoreRepository,
 )
+from src.ingestion.source_urls import is_placeholder_source_url, source_identity
 from src.research.competitor_search import SearchProviderError
 from src.scoring.opportunity_score import OpportunityScorer
 from src.services.correction_service import build_correction_service
@@ -174,14 +175,33 @@ def _render_overview(
 
 def _render_evidence(cluster: OpportunityCluster) -> None:
     links = sorted(
-        cluster.evidence_links,
+        (
+            link
+            for link in cluster.evidence_links
+            if not is_placeholder_source_url(link.evidence_item.source_url)
+        ),
         key=lambda link: link.evidence_item.collected_at,
         reverse=True,
     )
+    evidence_items = [link.evidence_item for link in links]
+    source_ids = {
+        identity
+        for item in evidence_items
+        if (
+            identity := source_identity(
+                item.source_url,
+                item.source_external_id,
+                item.id,
+            )
+        )
+    }
     linked, authors, sources = st.columns(3)
-    linked.metric("Linked items", cluster.evidence_count)
-    authors.metric("Independent authors", cluster.independent_author_count)
-    sources.metric("Independent sources", cluster.independent_source_count)
+    linked.metric("Linked items", len({item.id for item in evidence_items}))
+    authors.metric(
+        "Independent authors",
+        len({item.source_author for item in evidence_items if item.source_author}),
+    )
+    sources.metric("Independent sources", len(source_ids))
     st.caption(
         f"Evidence range: {format_datetime(cluster.first_seen_at)} to "
         f"{format_datetime(cluster.last_seen_at)}"

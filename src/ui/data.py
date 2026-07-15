@@ -120,7 +120,7 @@ def load_evidence_review(
 
     SessionFactory = get_ui_session_factory(database_url)
     with SessionFactory() as session:
-        items = EvidenceRepository(session).list_recent(limit=limit)
+        items = EvidenceRepository(session).list_visible_recent(limit=limit)
         return tuple(_evidence_summary(item) for item in items)
 
 

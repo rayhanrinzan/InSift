@@ -19,6 +19,7 @@ from src.database.models import (
     UserFeedback,
     utc_now,
 )
+from src.ingestion.source_urls import is_placeholder_source_url, source_identity
 
 
 class EvidenceRepository:
@@ -85,6 +86,26 @@ class EvidenceRepository:
             .limit(limit)
         )
         return list(self.session.execute(statement).scalars())
+
+    def list_visible_recent(self, limit: int = 20) -> list[EvidenceItem]:
+        """Return recent evidence without fake or local source URLs."""
+
+        statement = select(EvidenceItem).order_by(EvidenceItem.collected_at.desc())
+        items = self.session.execute(statement).scalars()
+        return [
+            item
+            for item in items
+            if not is_placeholder_source_url(item.source_url)
+        ][:limit]
+
+    def count_visible(self) -> int:
+        """Count evidence that can be shown without presenting fake sources."""
+
+        statement = select(EvidenceItem.source_url)
+        return sum(
+            not is_placeholder_source_url(source_url)
+            for source_url in self.session.execute(statement).scalars()
+        )
 
     def count(self) -> int:
         """Return the total number of evidence items."""
@@ -158,11 +179,34 @@ class ClusterRepository:
                 OpportunityCluster.status != "archived",
                 OpportunityCluster.independent_source_count >= 2,
             )
-            .options(selectinload(OpportunityCluster.scores))
+            .options(
+                selectinload(OpportunityCluster.scores),
+                selectinload(OpportunityCluster.evidence_links).selectinload(
+                    ClusterEvidence.evidence_item
+                ),
+                selectinload(OpportunityCluster.competitors),
+            )
             .order_by(OpportunityCluster.updated_at.desc())
-            .limit(limit)
         )
-        return list(self.session.execute(statement).scalars())
+        clusters = list(self.session.execute(statement).scalars())
+        return [
+            cluster
+            for cluster in clusters
+            if len(
+                {
+                    identity
+                    for link in cluster.evidence_links
+                    if (
+                        identity := source_identity(
+                            link.evidence_item.source_url,
+                            link.evidence_item.source_external_id,
+                            link.evidence_item.id,
+                        )
+                    )
+                }
+            )
+            >= 2
+        ][:limit]
 
     def save(self, cluster: OpportunityCluster) -> OpportunityCluster:
         """Persist changes to a cluster summary."""
