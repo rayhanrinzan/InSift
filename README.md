@@ -332,7 +332,7 @@ Run database migrations:
 
 ## Deployment
 
-SQLite is appropriate for one local user. A hosted production deployment should use PostgreSQL, execute Alembic migrations before startup, and inject secrets through the hosting platform rather than `.env`.
+SQLite is appropriate for one local user. FlowSift AI initializes an empty database automatically on first UI access. A hosted production deployment should use PostgreSQL, execute Alembic migrations when upgrading an existing schema, and inject secrets through the hosting platform rather than `.env`.
 
 ```bash
 docker build -t flowsift-ai .
