@@ -149,6 +149,21 @@ class ClusterRepository:
         )
         return list(self.session.execute(statement).scalars())
 
+    def list_promoted(self, limit: int = 1000) -> list[OpportunityCluster]:
+        """Return corroborated, user-facing opportunity clusters."""
+
+        statement = (
+            select(OpportunityCluster)
+            .where(
+                OpportunityCluster.status != "archived",
+                OpportunityCluster.independent_source_count >= 2,
+            )
+            .options(selectinload(OpportunityCluster.scores))
+            .order_by(OpportunityCluster.updated_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.execute(statement).scalars())
+
     def save(self, cluster: OpportunityCluster) -> OpportunityCluster:
         """Persist changes to a cluster summary."""
 

@@ -7,6 +7,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.clustering.embeddings import EmbeddingError
 from src.config import Settings, get_settings
+from src.extraction.opportunity_synthesizer import (
+    OpportunitySynthesisError,
+    build_opportunity_synthesizer,
+)
 from src.extraction.problem_extractor import ExtractionError
 from src.ingestion.manual import (
     IngestionError,
@@ -14,12 +18,6 @@ from src.ingestion.manual import (
     parse_csv_submissions,
 )
 from src.ingestion.reddit import RedditIngestionError, build_reddit_client
-from src.ingestion.scout import (
-    SCOUT_FOCUS_LABELS,
-    AutomatedOpportunityScout,
-    ScoutedEvidenceCandidate,
-    ScoutedOpportunity,
-)
 from src.ingestion.web import (
     WEB_SOURCE_LABELS,
     WebEvidenceCandidate,
@@ -27,6 +25,13 @@ from src.ingestion.web import (
 )
 from src.research.competitor_search import SearchProviderError, build_search_provider
 from src.services.discovery_service import DiscoveryResult, build_discovery_service
+from src.services.problem_scout_service import (
+    SCOUT_FOCUS_LABELS,
+    DiscoveredOpportunity,
+    LiveScoutConfigurationError,
+    ProblemScoutRun,
+    ProblemScoutService,
+)
 from src.ui.components import (
     configure_page,
     page_header,
@@ -68,6 +73,22 @@ def _render_result(result: DiscoveryResult) -> None:
         confidence.metric(
             "Confidence score", format_score(result.score.confidence_score)
         )
+        if (
+            result.assignment.cluster.independent_source_count >= 2
+            and result.assignment.cluster.status != "archived"
+            and st.button(
+                "Open this opportunity",
+                key=f"open-ingested-{result.assignment.cluster.id}",
+                type="primary",
+            )
+        ):
+            st.session_state["selected_cluster_id"] = result.assignment.cluster.id
+            st.switch_page("pages/3_Opportunity_Details.py")
+        elif result.assignment.cluster.independent_source_count < 2:
+            st.info(
+                "This evidence is saved. One more independent discussion supporting "
+                "the same problem is required before it becomes an opportunity."
+            )
     else:
         st.warning(
             "Stored for review, but rejected as problem evidence and excluded from scoring."
@@ -157,6 +178,20 @@ def _process_batch(
     rejected = sum(not result.accepted and not result.duplicate for result in results)
     duplicates = sum(result.duplicate for result in results)
     st.success(f"{accepted} accepted, {rejected} rejected, {duplicates} duplicate(s).")
+    promoted_ids = {
+        result.assignment.cluster.id
+        for result in results
+        if result.assignment
+        and result.assignment.cluster.independent_source_count >= 2
+        and result.assignment.cluster.status != "archived"
+    }
+    if promoted_ids:
+        render_page_link(
+            "pages/2_Opportunities.py",
+            label="View updated opportunities",
+            route="/Opportunities",
+            use_container_width=False,
+        )
     return results
 
 
@@ -216,79 +251,103 @@ def _render_web_candidates(
         st.session_state.pop("web-evidence-candidates", None)
 
 
-def _render_scout_leads(
-    leads: list[ScoutedOpportunity],
-    *,
-    settings: Settings,
-    SessionFactory: object,
-) -> None:
-    """Render grouped, preselected evidence for automatically sourced leads."""
-
-    if not leads:
-        st.info("No sourced opportunity leads were found in this scan.")
-        return
-
-    source_count = sum(len(lead.candidates) for lead in leads)
-    section_header(
-        "Sourced opportunity leads",
-        f"{len(leads)} workflows supported by {source_count} public source(s).",
+def _live_extraction_ready(settings: Settings) -> bool:
+    return bool(
+        not settings.demo_mode
+        and (settings.llm_provider or "").lower() == "openai"
+        and settings.llm_api_key
+        and settings.embedding_ready
     )
-    selected: list[ScoutedEvidenceCandidate] = []
-    for lead in leads:
-        with st.container(border=True):
-            heading, evidence_count = st.columns([4, 1])
-            heading.markdown(f"**{lead.theme.title}**")
-            heading.caption(lead.theme.target_customer)
-            evidence_count.metric("Sources", len(lead.candidates))
-            for index, candidate in enumerate(lead.candidates):
-                checked = st.checkbox(
-                    candidate.title,
-                    value=True,
-                    key=f"scout-{lead.theme.key}-{index}-{candidate.url}",
-                )
-                source, relevance, action = st.columns([2.5, 1, 1])
-                source.caption(candidate.domain)
-                relevance.caption(f"Relevance {candidate.score * 100:.0f}")
-                action.link_button(
+
+
+def _live_search_ready(settings: Settings) -> bool:
+    return bool(
+        not settings.demo_mode
+        and (settings.search_provider or "").lower() == "tavily"
+        and settings.search_api_key
+    )
+
+
+def _live_scout_ready(settings: Settings) -> bool:
+    return _live_search_ready(settings) and _live_extraction_ready(settings)
+
+
+def _render_discovered_opportunity(opportunity: DiscoveredOpportunity) -> None:
+    """Render one persisted opportunity and its real supporting sources."""
+
+    with st.container(border=True):
+        heading, source_count = st.columns([4, 1])
+        heading.subheader(opportunity.title)
+        heading.caption(opportunity.target_customer)
+        source_count.metric("Sources", opportunity.independent_source_count)
+
+        st.markdown("**Problem**")
+        st.write(opportunity.problem_summary)
+        workaround, product = st.columns(2)
+        workaround.markdown("**Current workaround**")
+        workaround.write(opportunity.current_workaround)
+        product.markdown("**Product direction**")
+        product.write(opportunity.proposed_solution)
+
+        problem, opportunity_score, confidence = st.columns(3)
+        problem.metric("Problem", format_score(opportunity.problem_score))
+        opportunity_score.metric(
+            "Opportunity", format_score(opportunity.opportunity_score)
+        )
+        confidence.metric("Confidence", format_score(opportunity.confidence_score))
+
+        with st.expander(f"Evidence ({len(opportunity.sources)} public sources)"):
+            for index, source in enumerate(opportunity.sources):
+                source_heading, source_action = st.columns([4, 1])
+                source_heading.markdown(f"**{source.title}**")
+                source_heading.caption(source.domain)
+                source_action.link_button(
                     "Open source",
-                    candidate.url,
+                    source.url,
                     use_container_width=True,
                 )
-                st.write(candidate.preview)
-                if checked:
-                    selected.append(candidate)
-                if index < len(lead.candidates) - 1:
+                st.write(source.excerpt)
+                if index < len(opportunity.sources) - 1:
                     st.divider()
 
-    if not settings.discovery_ready:
-        st.info(
-            "The scout can find sources now. Configure extraction and embeddings "
-            "to turn them into ranked opportunities."
+        if st.button(
+            "Open full opportunity",
+            key=f"open-scouted-{opportunity.cluster_id}",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.session_state["selected_cluster_id"] = opportunity.cluster_id
+            st.switch_page("pages/3_Opportunity_Details.py")
+
+
+def _render_scout_run(run: ProblemScoutRun) -> None:
+    """Render promoted leads or an honest no-corroboration result."""
+
+    st.caption(
+        f"{len(run.outcomes)} public discussions processed | "
+        f"{run.accepted_count} contained usable problem evidence | "
+        f"{run.duplicate_count} already stored"
+    )
+    if not run.opportunities:
+        st.warning(
+            "No repeated problem was supported by at least two independent public "
+            "discussions in this batch. The evidence was saved, but FlowSift AI did "
+            "not invent an opportunity from one-off or weakly aligned results."
         )
-    if st.button(
-        f"Build opportunities from {len(selected)} selected source(s)",
-        type="primary",
-        use_container_width=True,
-        disabled=not selected or not settings.discovery_ready,
-    ):
-        try:
-            _process_batch(
-                [candidate.to_submission() for candidate in selected],
-                SessionFactory=SessionFactory,
-                label="scouted source(s)",
-            )
-            st.session_state.pop("scouted-opportunities", None)
-            st.session_state.pop("scouted-opportunity-focus", None)
-            render_page_link(
-                "pages/2_Opportunities.py",
-                label="Review ranked opportunities",
-                route="/Opportunities",
-                use_container_width=True,
-            )
-        except (IngestionError, ExtractionError, EmbeddingError) as exc:
-            st.error(f"The selected sources could not be processed: {exc}")
-        except SQLAlchemyError:
-            render_database_error("Scouted evidence ingestion", settings)
+        return
+
+    section_header(
+        "Evidence-backed opportunities",
+        f"{len(run.opportunities)} repeated problem(s) persisted to the shared pipeline.",
+    )
+    for opportunity in run.opportunities:
+        _render_discovered_opportunity(opportunity)
+    render_page_link(
+        "pages/2_Opportunities.py",
+        label="View all opportunities",
+        route="/Opportunities",
+        use_container_width=False,
+    )
 
 
 def _render_opportunity_scout(
@@ -305,57 +364,78 @@ def _render_opportunity_scout(
         index=0,
     )
     focus = label_to_focus[selected_focus_label]
-    stored_focus = st.session_state.get("scouted-opportunity-focus")
-    has_results = stored_focus == focus and "scouted-opportunities" in st.session_state
+    stored_focus = st.session_state.get("problem-scout-focus")
+    has_results = stored_focus == focus and "problem-scout-run" in st.session_state
     scan_submitted = st.button(
         "Scan another batch" if has_results else "Scan for opportunities",
         type="primary",
         use_container_width=True,
-        disabled=not settings.search_ready,
+        disabled=not _live_scout_ready(settings),
     )
-    if not settings.search_ready:
-        st.info(
-            "Configure Tavily in Settings for live opportunity scouting, or "
-            "enable Demo mode to run an offline scan."
+    if not _live_scout_ready(settings):
+        st.warning(
+            "Automatic discovery only runs against real public sources. Turn Demo "
+            "mode off and configure OpenAI plus Tavily in Settings to use it."
+        )
+        render_page_link(
+            "pages/4_Settings.py",
+            label="Open Settings",
+            route="/Settings",
+            use_container_width=False,
         )
     if scan_submitted:
-        scan_index_key = f"opportunity-scout-index-{focus}"
+        scan_index_key = f"problem-scout-index-{focus}"
         scan_index = int(st.session_state.get(scan_index_key, 0))
-        st.session_state.pop("scouted-opportunities", None)
+        st.session_state.pop("problem-scout-run", None)
         try:
-            with st.status("Scanning public customer pain", expanded=True) as status:
-                status.write("Selecting customer workflows")
-                scout = AutomatedOpportunityScout(
-                    build_search_provider(settings),
-                    search_depth=settings.search_depth,
-                )
-                status.write("Searching and grouping attributable discussions")
-                leads = scout.scan(
-                    focus=focus,
-                    theme_limit=4,
-                    results_per_theme=3,
-                    offset=scan_index * 4,
-                )
-                st.session_state["scouted-opportunities"] = leads
-                st.session_state["scouted-opportunity-focus"] = focus
+            with st.status("Discovering repeated customer problems", expanded=True) as status:
+                progress = st.progress(0, text="Selecting customer segments")
+
+                def update_progress(value: float, message: str) -> None:
+                    progress.progress(int(value * 100), text=message)
+
+                with SessionFactory() as session:  # type: ignore[operator]
+                    scout = ProblemScoutService(
+                        build_search_provider(settings),
+                        build_discovery_service(session, settings),
+                        build_opportunity_synthesizer(settings),
+                        search_depth=settings.search_depth,
+                    )
+                    run = scout.run(
+                        focus=focus,
+                        segment_limit=4,
+                        results_per_segment=3,
+                        offset=scan_index * 4,
+                        progress_callback=update_progress,
+                    )
+                clear_ui_data_caches()
+                st.session_state["problem-scout-run"] = run
+                st.session_state["problem-scout-focus"] = focus
                 st.session_state[scan_index_key] = scan_index + 1
-                source_count = sum(len(lead.candidates) for lead in leads)
                 status.update(
-                    label=(f"Found {len(leads)} lead(s) from {source_count} source(s)"),
+                    label=(
+                        f"Found {len(run.opportunities)} corroborated opportunity lead(s) "
+                        f"from {len(run.outcomes)} public discussion(s)"
+                    ),
                     state="complete",
                     expanded=False,
                 )
-        except (IngestionError, SearchProviderError) as exc:
+        except (
+            IngestionError,
+            LiveScoutConfigurationError,
+            SearchProviderError,
+            ExtractionError,
+            OpportunitySynthesisError,
+            EmbeddingError,
+        ) as exc:
             st.error(f"Opportunity scouting could not complete: {exc}")
+        except SQLAlchemyError:
+            render_database_error("Opportunity scouting", settings)
 
     if stored_focus == focus or scan_submitted:
-        scout_leads = st.session_state.get("scouted-opportunities")
-        if scout_leads is not None:
-            _render_scout_leads(
-                scout_leads,
-                settings=settings,
-                SessionFactory=SessionFactory,
-            )
+        scout_run = st.session_state.get("problem-scout-run")
+        if isinstance(scout_run, ProblemScoutRun):
+            _render_scout_run(scout_run)
 
 
 def _render_topic_search(
@@ -391,12 +471,12 @@ def _render_topic_search(
             "Find customer discussions",
             type="primary",
             use_container_width=True,
-            disabled=not settings.search_ready,
+            disabled=not _live_search_ready(settings),
         )
-    if not settings.search_ready:
-        st.info(
-            "Configure Tavily in Settings for live public-web discovery, or "
-            "enable Demo mode to try the workflow offline."
+    if not _live_search_ready(settings):
+        st.warning(
+            "Public web search requires Demo mode off and a Tavily key. Simulated "
+            "search results are never shown as sources."
         )
     if web_submitted:
         try:
@@ -427,7 +507,7 @@ def _render_topic_search(
     if web_candidates is not None:
         _render_web_candidates(
             web_candidates,
-            discovery_ready=settings.discovery_ready,
+            discovery_ready=_live_extraction_ready(settings),
             SessionFactory=SessionFactory,
         )
 
@@ -444,7 +524,13 @@ def main() -> None:
     )
     SessionFactory = get_ui_session_factory(settings.database_url)
 
-    if not settings.discovery_ready:
+    if settings.demo_mode:
+        st.warning(
+            "Demo mode is on. Automatic public-source discovery is disabled because "
+            "demo search results are fictional. Turn Demo mode off and configure "
+            "OpenAI plus Tavily in Settings for real discovery."
+        )
+    elif not settings.discovery_ready:
         st.warning(
             "Live extraction is not configured. Add an OpenAI key and embedding "
             "provider in Settings before processing new evidence."

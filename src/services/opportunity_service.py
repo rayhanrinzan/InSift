@@ -57,12 +57,19 @@ class OpportunityService:
             self.session.scalar(select(func.count(EvidenceItem.id))) or 0
         )
         cluster_count = int(
-            self.session.scalar(select(func.count(OpportunityCluster.id))) or 0
+            self.session.scalar(
+                select(func.count(OpportunityCluster.id)).where(
+                    OpportunityCluster.status != "archived",
+                    OpportunityCluster.independent_source_count >= 2,
+                )
+            )
+            or 0
         )
         researched = int(
             self.session.scalar(
                 select(func.count(OpportunityCluster.id)).where(
-                    OpportunityCluster.status == "researched"
+                    OpportunityCluster.status == "researched",
+                    OpportunityCluster.independent_source_count >= 2,
                 )
             )
             or 0
@@ -85,6 +92,10 @@ class OpportunityService:
                     ClusterEvidence.evidence_item
                 ),
                 selectinload(OpportunityCluster.competitors),
+            )
+            .where(
+                OpportunityCluster.status != "archived",
+                OpportunityCluster.independent_source_count >= 2,
             )
             .order_by(OpportunityCluster.updated_at.desc())
             .limit(limit)

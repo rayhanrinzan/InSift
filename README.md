@@ -53,7 +53,7 @@ You need:
 - A [Tavily API key](https://app.tavily.com) for public-web discovery and competitor research.
 - Optional: an approved [Reddit developer application](https://developers.reddit.com/app-registration) with a client ID and client secret for Reddit collection.
 
-Reddit may require application review or approval. Web search works without Reddit after Tavily is ready, while manual paste and CSV ingestion work after OpenAI and embeddings are ready. Demo mode exercises every discovery workflow without external credentials.
+Reddit may require application review or approval. Web search works without Reddit after Tavily is ready, while manual paste and CSV ingestion work after OpenAI and embeddings are ready. Demo mode uses seeded fictional records for product evaluation; it never presents simulated search results as public sources.
 
 Never commit API keys. FlowSift AI stores locally entered credentials in the ignored `.env` file.
 
@@ -103,13 +103,13 @@ The launcher initializes whichever database is named in `.env` before starting t
 1. Open **Discover**.
 2. Leave **Scout for me** and **Any market** selected.
 3. Click **Scan for opportunities**. No idea or search prompt is required.
-4. Review the automatically sourced workflow leads and their original public sources.
-5. Leave credible sources selected and click **Build opportunities from selected sources**.
-6. Use **Search a topic** only when you already have a market or workflow to investigate.
-7. Use **Paste discussion** for individual interview notes, support messages, sales-call notes, or public discussions you already have.
-8. Use **Upload CSV** for customer-owned exports such as support tickets, survey responses, cancellation feedback, interview transcripts, and CRM notes.
-9. Review whether the evidence was accepted or rejected in **Extraction review**.
-10. Open **Opportunities** to see the resulting clusters and scores.
+4. FlowSift AI searches real public discussions, extracts problems, clusters repeated evidence, and saves supported opportunities in one run.
+5. Review each problem, target customer, current workaround, product direction, and original source URL.
+6. Click **Open full opportunity** to open the exact same record in **Opportunity Details**.
+7. Use **Search a topic** only when you already have a market or workflow to investigate.
+8. Use **Paste discussion** for individual interview notes, support messages, sales-call notes, or public discussions you already have.
+9. Use **Upload CSV** for customer-owned exports such as support tickets, survey responses, cancellation feedback, interview transcripts, and CRM notes.
+10. Review whether the evidence was accepted or rejected in **Extraction review**.
 11. Open an opportunity, then click **Research competitors** to run Tavily search and OpenAI classification.
 12. Inspect **Evidence**, **Competitors**, and **Scoring** before treating the opportunity as validated.
 
@@ -132,9 +132,11 @@ Click an opportunity title to open its full details.
 
 Use **Discover** to add source evidence.
 
-**Opportunity scout** is the default discovery workflow. Click **Scan for opportunities** without entering an idea. FlowSift AI rotates through concrete customer workflows across healthcare, professional services, property and field services, commerce and supply chain, and people operations. Choose a market focus only when useful.
+**Opportunity scout** is the default discovery workflow. Click **Scan for opportunities** without entering an idea. FlowSift AI rotates through customer segments across healthcare, professional services, property and field services, commerce and supply chain, and people operations. It does not begin with prewritten problem ideas.
 
-Each scan searches for attributable customer-pain evidence, groups sources into workflow leads, and preselects the sources for review. Click **Scan another batch** to rotate to different workflow hypotheses.
+Each scan searches real public discussions, extracts first-hand problems, and clusters related evidence. A result becomes an opportunity only when at least two independent source URLs support the same underlying problem and the synthesis quality gate confirms that the sources are coherent. Generic, unrelated, and one-off results remain evidence records and are not shown as opportunities. Click **Scan another batch** to rotate to different customer segments.
+
+Every displayed lead is already persisted. Its **Open full opportunity** button passes the stored cluster ID to **Opportunity Details**, and the same record appears automatically on **Overview** and **Opportunities**. Source buttons always use the original public URL. Placeholder domains such as `.example` are rejected.
 
 **Search a topic** is the optional manual mode for users who already have a market, workflow, or problem. Automated and manual results can come from:
 
@@ -143,7 +145,7 @@ Each scan searches for attributable customer-pain evidence, groups sources into 
 - Product-review sites
 - The broader public web
 
-Results are deduplicated and shown with their source URL, domain, excerpt, and search relevance. Nothing is extracted until it has been selected for ingestion. Live search uses Tavily; Demo mode provides an offline sample workflow.
+Results are deduplicated and shown with their source URL, domain, excerpt, and search relevance. Nothing is extracted until it has been selected for ingestion. Public web search uses Tavily and is disabled in Demo mode.
 
 **Paste discussion** processes one source at a time. It is intended for interview notes, support messages, sales-call notes, public forum posts, and other evidence already collected by the user. Include source metadata whenever it is available.
 
@@ -210,7 +212,7 @@ Password fields never display stored keys. Leaving a password field blank preser
 
 ## Demo Mode
 
-Demo mode is useful for learning the complete workflow without external API costs. Set `DEMO_MODE=true` in `.env`, then run:
+Demo mode is useful for evaluating the interface with explicitly fictional seeded data and no external API costs. It does not run Opportunity Scout or topic search. Set `DEMO_MODE=true` in `.env`, then run:
 
 ```bash
 /opt/anaconda3/bin/python scripts/initialize_database.py
@@ -280,7 +282,7 @@ Live databases begin empty. Configure OpenAI, submit evidence through **Discover
 
 Open **Settings** and inspect the readiness badges:
 
-- Opportunity scouting and topic search require Tavily (or Demo mode); extracting selected results requires extraction and embeddings.
+- Opportunity scouting requires live OpenAI extraction, embeddings, and Tavily. Topic search requires Tavily; extracting selected results also requires live OpenAI extraction and embeddings.
 - Paste and CSV ingestion require extraction and embeddings.
 - Competitor research requires extraction and search.
 - Reddit collection additionally requires Reddit OAuth.

@@ -3,11 +3,6 @@
 import pytest
 
 from src.ingestion.manual import IngestionError
-from src.ingestion.scout import (
-    AutomatedOpportunityScout,
-    build_scout_query,
-    select_opportunity_themes,
-)
 from src.ingestion.web import (
     WebEvidenceDiscoveryService,
     candidate_from_search_result,
@@ -15,6 +10,10 @@ from src.ingestion.web import (
 )
 from src.research.competitor_search import MockSearchProvider
 from src.research.schemas import SearchResult
+from src.services.problem_scout_service import (
+    build_problem_query,
+    select_customer_segments,
+)
 
 
 class StaticSearchProvider:
@@ -60,11 +59,11 @@ def test_evidence_queries_require_topic_and_source() -> None:
 
 
 def test_automated_queries_use_broad_unquoted_terms() -> None:
-    theme = select_opportunity_themes("healthcare", limit=1)[0]
-    query = build_scout_query(theme)
+    segment = select_customer_segments("healthcare", limit=1)[0]
+    query = build_problem_query(segment)
 
-    assert '"patient referral follow-up"' not in query
-    assert '"independent clinics"' not in query
+    assert "patient referral follow-up" not in query
+    assert segment.search_terms in query
     assert "site:news.ycombinator.com" in query
 
 
@@ -128,38 +127,15 @@ def test_demo_search_returns_problem_evidence() -> None:
     assert any("takes hours" in result.snippet.lower() for result in results)
 
 
-def test_opportunity_theme_selection_rotates_across_markets() -> None:
-    first_scan = select_opportunity_themes("all", limit=4, offset=0)
-    second_scan = select_opportunity_themes("all", limit=4, offset=4)
-    healthcare = select_opportunity_themes("healthcare", limit=8)
+def test_customer_segment_selection_rotates_across_markets() -> None:
+    first_scan = select_customer_segments("all", limit=4, offset=0)
+    second_scan = select_customer_segments("all", limit=4, offset=4)
+    healthcare = select_customer_segments("healthcare", limit=8)
 
     assert len(first_scan) == 4
-    assert len({theme.focus for theme in first_scan}) == 4
-    assert {theme.key for theme in first_scan}.isdisjoint(
-        {theme.key for theme in second_scan}
+    assert len({segment.focus for segment in first_scan}) == 4
+    assert {segment.key for segment in first_scan}.isdisjoint(
+        {segment.key for segment in second_scan}
     )
     assert healthcare
-    assert all(theme.focus == "healthcare" for theme in healthcare)
-
-
-def test_automated_scout_groups_attributable_evidence_without_a_prompt() -> None:
-    leads = AutomatedOpportunityScout(MockSearchProvider()).scan(
-        focus="all",
-        theme_limit=4,
-        results_per_theme=2,
-    )
-
-    assert len(leads) == 4
-    assert all(len(lead.candidates) == 2 for lead in leads)
-    assert len({candidate.url for lead in leads for candidate in lead.candidates}) == 8
-    for lead in leads:
-        for candidate in lead.candidates:
-            assert candidate.theme.key == lead.theme.key
-            assert candidate.theme.target_customer == lead.theme.target_customer
-            submission = candidate.to_submission()
-            assert submission.source_url == candidate.url
-            assert submission.metadata_json["opportunity_theme"] == lead.theme.key
-            assert (
-                submission.metadata_json["scouted_target_customer"]
-                == lead.theme.target_customer
-            )
+    assert all(segment.focus == "healthcare" for segment in healthcare)

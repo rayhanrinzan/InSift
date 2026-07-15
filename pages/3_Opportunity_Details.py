@@ -514,7 +514,7 @@ def main() -> None:
 
     try:
         with SessionFactory() as session:
-            clusters = ClusterRepository(session).list(limit=1000)
+            clusters = ClusterRepository(session).list_promoted(limit=1000)
         if not clusters:
             empty_state(
                 "No opportunity selected",

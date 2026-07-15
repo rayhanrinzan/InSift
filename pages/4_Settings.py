@@ -66,15 +66,26 @@ def main() -> None:
 
     section_header(
         "Provider readiness",
-        "Core workflows require extraction, embeddings, and research. Reddit intake is optional.",
+        "Live discovery requires OpenAI, embeddings, and Tavily. Reddit intake is optional.",
+    )
+    live_extraction_ready = bool(
+        not settings.demo_mode
+        and (settings.llm_provider or "").lower() == "openai"
+        and settings.llm_api_key
+    )
+    live_embedding_ready = bool(not settings.demo_mode and settings.embedding_ready)
+    live_search_ready = bool(
+        not settings.demo_mode
+        and (settings.search_provider or "").lower() == "tavily"
+        and settings.search_api_key
     )
     llm, embeddings, search, reddit = st.columns(4)
     with llm:
-        _provider_status("Extraction", settings.llm_ready)
+        _provider_status("Extraction", live_extraction_ready)
     with embeddings:
-        _provider_status("Embeddings", settings.embedding_ready)
+        _provider_status("Embeddings", live_embedding_ready)
     with search:
-        _provider_status("Research", settings.search_ready)
+        _provider_status("Public search", live_search_ready)
     with reddit:
         _provider_status("Reddit (optional)", settings.reddit_ready)
 

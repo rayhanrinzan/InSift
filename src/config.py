@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     reddit_user_agent: str = Field(
         "FlowSiftAI/1.0 by configured-user", env="REDDIT_USER_AGENT"
     )
-    demo_mode: bool = Field(True, env="DEMO_MODE")
+    demo_mode: bool = Field(False, env="DEMO_MODE")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
     @validator(
