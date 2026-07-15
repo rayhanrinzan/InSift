@@ -32,13 +32,14 @@ FLOWSIFT_PYTHON=/path/to/python bash scripts/run_app.sh --server.port 8502
 
 ## What "Fully Live" Means
 
-The web server can run without provider credentials. Real extraction and semantic clustering require OpenAI, public-web discovery and competitor research require Tavily, and Reddit collection requires Reddit OAuth.
+The core discovery workflow runs without paid provider credentials. It searches credential-free public community APIs, analyzes source text locally, and clusters evidence with deterministic local embeddings. OpenAI and Tavily improve analysis and search coverage when configured, but quota or request failures automatically fall back to the local path. Reddit collection still requires Reddit OAuth.
 
-FlowSift AI's core workflow is live when Extraction, Embeddings, and Research are ready. Reddit is an optional evidence connector:
+FlowSift AI's core workflow is live when local extraction, embeddings, and public search are ready:
 
-- **Extraction:** OpenAI is configured.
-- **Embeddings:** OpenAI embeddings or local Sentence Transformers are configured.
-- **Research:** Tavily is configured.
+- **Extraction:** local evidence rules work without a key; OpenAI is an optional enhancement.
+- **Embeddings:** deterministic local embeddings work without a model download.
+- **Public search:** Hacker News and Stack Exchange APIs work without keys; Tavily broadens coverage.
+- **Competitor research:** Tavily remains optional and is required for the dedicated competitor-research action.
 - **Reddit (optional):** approved Reddit OAuth credentials enable Reddit intake.
 
 An empty live database is normal. Opportunities appear only after FlowSift AI processes evidence.
@@ -47,13 +48,13 @@ An empty live database is normal. Opportunities appear only after FlowSift AI pr
 
 ### 1. Obtain provider credentials
 
-You need:
+Optional provider credentials:
 
-- An [OpenAI API key](https://platform.openai.com/api-keys) for structured problem extraction and competitor classification.
-- A [Tavily API key](https://app.tavily.com) for public-web discovery and competitor research.
+- An [OpenAI API key](https://platform.openai.com/api-keys) for enhanced structured extraction and classification.
+- A [Tavily API key](https://app.tavily.com) for broader public-web coverage and competitor research.
 - Optional: an approved [Reddit developer application](https://developers.reddit.com/app-registration) with a client ID and client secret for Reddit collection.
 
-Reddit may require application review or approval. Web search works without Reddit after Tavily is ready, while manual paste and CSV ingestion work after OpenAI and embeddings are ready. Demo mode uses seeded fictional records for product evaluation; it never presents simulated search results as public sources.
+No credential is required to use Opportunity Scout, topic search, manual paste, or CSV ingestion. Reddit may require application review or approval. Demo mode uses seeded fictional records for product evaluation; it never presents simulated search results as public sources.
 
 Never commit API keys. FlowSift AI stores locally entered credentials in the ignored `.env` file.
 
@@ -73,20 +74,20 @@ Open **Settings** in the left navigation and set:
 | --- | --- |
 | Environment | `production` |
 | Demo mode | Off |
-| LLM provider | `openai` |
+| LLM provider | `local` |
 | LLM model | `gpt-5.6-luna` |
-| OpenAI API key | Your OpenAI API key |
-| Embedding provider | `openai` |
-| Embedding model | `text-embedding-3-small` |
-| Search provider | `tavily` |
-| Tavily API key | Your Tavily API key |
+| OpenAI API key | Optional |
+| Embedding provider | `deterministic` |
+| Embedding model | Leave the default |
+| Search provider | `community` |
+| Tavily API key | Optional |
 | Reddit client ID | Your approved OAuth client ID |
 | Reddit client secret | Your approved OAuth client secret |
 | Reddit user agent | A descriptive value naming FlowSift AI and its operator |
 
 Leave the database as `sqlite:///flowsift_live.db` for a local live launch. Click **Save configuration**.
 
-The default OpenAI model is the cost-sensitive GPT-5.6 variant. OpenAI embeddings use `text-embedding-3-small`, which is intended for tasks including clustering and similarity search.
+Select `openai` or `tavily` later to enhance the corresponding local provider. FlowSift AI automatically returns to its local path when those optional APIs reject a request or exhaust quota.
 
 ### 4. Restart after changing configuration
 
@@ -276,13 +277,13 @@ Then open [http://localhost:8502](http://localhost:8502).
 
 ### The app opens but has no opportunities
 
-Live databases begin empty. Configure OpenAI, submit evidence through **Discover**, and then open **Opportunities**. Demo records are loaded only by `scripts/seed_demo_data.py`.
+Live databases begin empty. Submit evidence through **Discover**, and then open **Opportunities**. Demo records are loaded only by `scripts/seed_demo_data.py`.
 
 ### Discover or Research buttons are disabled
 
 Open **Settings** and inspect the readiness badges:
 
-- Opportunity scouting requires live OpenAI extraction, embeddings, and Tavily. Topic search requires Tavily; extracting selected results also requires live OpenAI extraction and embeddings.
+- Opportunity scouting and topic search require Demo mode off and a working local embedding provider. OpenAI and Tavily are optional enhancements.
 - Paste and CSV ingestion require extraction and embeddings.
 - Competitor research requires extraction and search.
 - Reddit collection additionally requires Reddit OAuth.
@@ -369,9 +370,10 @@ flowchart TD
     Repositories --> Models[SQLAlchemy models]
     Models --> DB[(SQLite local / PostgreSQL production)]
     Reddit[Reddit OAuth] --> Services
-    OpenAI[OpenAI extraction and classification] --> Services
-    Embeddings[OpenAI or local embeddings] --> Services
-    Tavily[Tavily competitor search] --> Services
+    Community[Public community APIs] --> Services
+    Local[Local extraction and embeddings] --> Services
+    OpenAI[Optional OpenAI enhancement] --> Services
+    Tavily[Optional Tavily search] --> Services
 ```
 
 ## Data and Platform Safety
@@ -388,7 +390,7 @@ flowchart TD
 - SQLite is local and single-instance; hosted deployments need persistent PostgreSQL.
 - Build feasibility and market accessibility remain neutral until dedicated validation inputs are added.
 - Streamlit read caches are process-local with a 30-second TTL.
-- Tavily is the only live web search adapter currently implemented.
+- Credential-free search currently covers Hacker News and Stack Overflow; Tavily adds broader forum, issue, and review coverage.
 
 ## Test Coverage
 

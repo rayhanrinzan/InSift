@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -15,11 +16,11 @@ from src.ingestion.manual import IngestionError
 from src.ingestion.schemas import SourceSubmission
 from src.ingestion.source_urls import is_public_source_url
 from src.ingestion.web import (
-    PAIN_SIGNALS,
     WebEvidenceCandidate,
     candidate_from_search_result,
 )
 from src.research.competitor_search import SearchProvider, canonical_url
+from src.research.public_discussion_search import is_supported_discussion_url
 from src.services.discovery_service import DiscoveryResult, DiscoveryService
 
 
@@ -31,13 +32,6 @@ SCOUT_FOCUS_LABELS: dict[str, str] = {
     "commerce": "Commerce & supply chain",
     "people_ops": "Hiring & workplace operations",
 }
-
-SCOUT_SOURCE_FILTER = (
-    "(site:reddit.com OR site:news.ycombinator.com OR site:indiehackers.com OR "
-    "site:stackoverflow.com OR site:github.com OR site:g2.com OR "
-    "site:capterra.com OR site:trustpilot.com)"
-)
-
 
 class LiveScoutConfigurationError(IngestionError):
     """Raised when a non-live provider is used for public-source discovery."""
@@ -144,6 +138,71 @@ CUSTOMER_SEGMENTS: tuple[CustomerSegment, ...] = (
         "compliance manager regulated small business",
         "people_ops",
     ),
+)
+
+SCOUT_RELEVANCE_TERMS: dict[str, tuple[str, ...]] = {
+    "clinic-operations": ("clinic", "practice", "patient", "medical office"),
+    "accounting-firms": ("accountant", "accounting", "bookkeeping", "bookkeeper"),
+    "property-management": (
+        "property manager",
+        "property management",
+        "landlord",
+        "tenant",
+    ),
+    "ecommerce-operations": ("ecommerce", "e-commerce", "merchant", "online store"),
+    "recruiting-teams": ("recruiter", "recruiting", "talent acquisition", "candidate"),
+    "therapy-practices": ("therapist", "therapy practice", "counselor", "client"),
+    "marketing-agencies": ("marketing agency", "agency owner", "client campaign"),
+    "construction-teams": ("construction", "contractor", "subcontractor", "jobsite"),
+    "distributors": ("distributor", "wholesale", "warehouse", "inventory"),
+    "small-hr-teams": ("hr manager", "human resources", "people operations", "employee"),
+    "insurance-brokers": (
+        "insurance broker",
+        "insurance agency",
+        "policyholder",
+        "carrier",
+    ),
+    "field-service-businesses": (
+        "field service",
+        "home service",
+        "technician",
+        "service call",
+    ),
+    "manufacturers": ("manufacturer", "manufacturing", "production", "factory"),
+    "dental-practices": ("dental practice", "dentist", "dental office", "patient"),
+    "regulated-businesses": ("compliance", "regulated", "audit", "regulation"),
+}
+
+FIRST_HAND_MARKERS = (" i ", " i'm ", " i've ", " my ", " we ", " we're ", " our ")
+FIRST_HAND_PAIN_MARKERS = (
+    "manual",
+    "spreadsheet",
+    "excel",
+    "copy-paste",
+    "copy paste",
+    "takes hours",
+    "waste hours",
+    "frustrating",
+    "struggling",
+    "killing our",
+    "difficult",
+    "missed",
+    "errors",
+    "problem",
+    "painful",
+)
+SOLICITATION_MARKERS = (
+    "doing some research",
+    "would love to hear",
+    "what's the most frustrating",
+    "what is the most frustrating",
+    "what repetitive tasks",
+    "i help small businesses",
+    "system we built",
+    "we built this",
+    "offer my help",
+    "book a demo",
+    "dm me",
 )
 
 
@@ -254,11 +313,38 @@ def build_problem_query(segment: CustomerSegment) -> str:
     """Build a broad query for first-hand pain, workarounds, and repeated work."""
 
     query = (
-        f"{segment.search_terms} first hand complaint discussion "
-        f"({PAIN_SIGNALS} OR spreadsheet OR copy-paste OR follow-up) "
-        f"{SCOUT_SOURCE_FILTER}"
+        f"{segment.search_terms} first hand customer complaint "
+        "manual repetitive workaround spreadsheet follow-up hours frustrating"
     )
     return " ".join(query.split())
+
+
+def _matches_segment(
+    evidence: WebEvidenceCandidate,
+    segment: CustomerSegment,
+) -> bool:
+    text = " ".join(
+        (evidence.title, evidence.url, evidence.raw_text[:3_000], evidence.snippet)
+    ).lower()
+    return any(term in text for term in SCOUT_RELEVANCE_TERMS[segment.key])
+
+
+def _contains_first_hand_problem(evidence: WebEvidenceCandidate) -> bool:
+    text = " ".join(
+        (evidence.title, evidence.raw_text[:3_000], evidence.snippet)
+    ).lower()
+    padded = f" {text} "
+    if any(marker in padded for marker in SOLICITATION_MARKERS):
+        return False
+    sentences = [
+        f" {sentence.strip()} "
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", padded)
+    ]
+    return any(
+        any(subject in sentence for subject in FIRST_HAND_MARKERS)
+        and any(pain in sentence for pain in FIRST_HAND_PAIN_MARKERS)
+        for sentence in sentences
+    )
 
 
 class ProblemScoutService:
@@ -274,9 +360,9 @@ class ProblemScoutService:
         minimum_independent_sources: int = 2,
         minimum_synthesis_confidence: float = 0.55,
     ) -> None:
-        if provider.name != "tavily":
+        if provider.name == "mock":
             raise LiveScoutConfigurationError(
-                "Public problem scouting requires the live Tavily provider."
+                "Public problem scouting requires a real-source search provider."
             )
         if minimum_independent_sources < 2:
             raise ValueError("Opportunity promotion requires at least two sources.")
@@ -299,8 +385,8 @@ class ProblemScoutService:
     ) -> ProblemScoutRun:
         """Run one complete search-to-database discovery cycle."""
 
-        if not 1 <= results_per_segment <= 5:
-            raise IngestionError("Results per customer segment must be between 1 and 5.")
+        if not 1 <= results_per_segment <= 10:
+            raise IngestionError("Results per customer segment must be between 1 and 10.")
         segments = select_customer_segments(
             focus,
             limit=segment_limit,
@@ -373,6 +459,12 @@ class ProblemScoutService:
                 if evidence is None:
                     continue
                 if not is_public_source_url(evidence.url):
+                    continue
+                if not is_supported_discussion_url(evidence.url):
+                    continue
+                if not _matches_segment(evidence, segment):
+                    continue
+                if not _contains_first_hand_problem(evidence):
                     continue
                 url_key = canonical_url(evidence.url)
                 if url_key in seen_urls:

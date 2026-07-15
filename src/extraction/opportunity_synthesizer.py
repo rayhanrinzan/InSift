@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections import Counter
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
@@ -130,14 +132,64 @@ class OpenAIOpportunitySynthesizer:
             raise OpportunitySynthesisError(str(exc)) from exc
 
 
-class DeterministicOpportunitySynthesizer:
-    """Predictable evidence-grounded synthesis used only by automated tests."""
+class ResilientOpportunitySynthesizer:
+    """Use OpenAI synthesis when possible and conservative local synthesis otherwise."""
+
+    def __init__(
+        self,
+        primary: OpportunitySynthesisProvider,
+        fallback: OpportunitySynthesisProvider,
+    ) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.primary_available = True
 
     def synthesize(
         self,
         cluster: OpportunityCluster,
         evidence_items: list[EvidenceItem],
     ) -> OpportunityDraft:
+        if not self.primary_available:
+            return self.fallback.synthesize(cluster, evidence_items)
+        try:
+            return self.primary.synthesize(cluster, evidence_items)
+        except OpportunitySynthesisError:
+            self.primary_available = False
+            return self.fallback.synthesize(cluster, evidence_items)
+
+
+class DeterministicOpportunitySynthesizer:
+    """Conservative local synthesis that requires repeated specific language."""
+
+    GENERIC_TERMS = {
+        "customer",
+        "customers",
+        "every",
+        "frustrating",
+        "hours",
+        "manual",
+        "manually",
+        "operations",
+        "problem",
+        "process",
+        "repetitive",
+        "spreadsheet",
+        "spreadsheets",
+        "still",
+        "takes",
+        "team",
+        "teams",
+        "using",
+        "workaround",
+    }
+
+    def synthesize(
+        self,
+        cluster: OpportunityCluster,
+        evidence_items: list[EvidenceItem],
+    ) -> OpportunityDraft:
+        shared_terms = self._shared_specific_terms(evidence_items)
+        supported = len(evidence_items) >= 2 and len(shared_terms) >= 2
         target = next(
             (item.affected_user for item in evidence_items if item.affected_user),
             None,
@@ -152,7 +204,7 @@ class DeterministicOpportunitySynthesizer:
         ) or cluster.current_workaround or "manual coordination"
         problem = cluster.problem_summary
         return OpportunityDraft(
-            supported=True,
+            supported=supported,
             title=cluster.title,
             problem_summary=problem,
             target_customer=target,
@@ -163,29 +215,54 @@ class DeterministicOpportunitySynthesizer:
             )[:1_500],
             reasoning=(
                 f"The cluster contains {len(evidence_items)} independently sourced "
-                "accepted evidence records describing the same problem."
+                "accepted records. Repeated specific terms: "
+                f"{', '.join(shared_terms[:8]) or 'none'}."
             ),
-            confidence=min(0.95, 0.55 + len(evidence_items) * 0.1),
+            confidence=(
+                min(0.88, 0.55 + len(shared_terms) * 0.04)
+                if supported
+                else 0.35
+            ),
+        )
+
+    @classmethod
+    def _shared_specific_terms(
+        cls,
+        evidence_items: list[EvidenceItem],
+    ) -> list[str]:
+        document_frequency: Counter[str] = Counter()
+        for item in evidence_items:
+            text = " ".join(
+                filter(None, (item.problem_statement, item.affected_user))
+            ).lower()
+            tokens = {
+                token
+                for token in re.findall(r"[a-z0-9]+", text)
+                if len(token) >= 4 and token not in cls.GENERIC_TERMS
+            }
+            document_frequency.update(tokens)
+        return sorted(
+            token for token, frequency in document_frequency.items() if frequency >= 2
         )
 
 
 def build_opportunity_synthesizer(
     settings: Settings,
 ) -> OpportunitySynthesisProvider:
-    """Build the live OpenAI synthesizer used by automatic problem scouting."""
+    """Build evidence synthesis with a quota-independent local fallback."""
 
-    if settings.demo_mode or (settings.llm_provider or "").lower() != "openai":
-        raise OpportunitySynthesisError(
-            "Live opportunity synthesis requires Demo mode off and OpenAI configured."
-        )
-    if not settings.llm_api_key:
-        raise OpportunitySynthesisError(
-            "LLM_API_KEY is required for live opportunity synthesis."
-        )
-    return OpenAIOpportunitySynthesizer(
+    local = DeterministicOpportunitySynthesizer()
+    if (
+        settings.demo_mode
+        or (settings.llm_provider or "").lower() != "openai"
+        or not settings.llm_api_key
+    ):
+        return local
+    primary = OpenAIOpportunitySynthesizer(
         OpenAIClient(
             settings.llm_api_key.get_secret_value(),
             model=settings.llm_model,
             base_url=settings.openai_base_url,
         )
     )
+    return ResilientOpportunitySynthesizer(primary, local)

@@ -8,9 +8,16 @@ from urllib.error import HTTPError
 
 import pytest
 
+from src.clustering.embeddings import (
+    EmbeddingError,
+    ResilientEmbeddingProvider,
+)
 from src.config import Settings
 from src.extraction.problem_extractor import (
+    DeterministicMockExtractionProvider,
+    ExtractionError,
     OpenAIProblemExtractionProvider,
+    ResilientProblemExtractionProvider,
     build_problem_extraction_provider,
 )
 from src.providers.openai import (
@@ -125,4 +132,46 @@ def test_live_extraction_builder_requires_and_uses_openai() -> None:
 
     provider = build_problem_extraction_provider(settings)
 
-    assert isinstance(provider, OpenAIProblemExtractionProvider)
+    assert isinstance(provider, ResilientProblemExtractionProvider)
+    assert isinstance(provider.primary, OpenAIProblemExtractionProvider)
+    assert isinstance(provider.fallback, DeterministicMockExtractionProvider)
+
+
+def test_openai_extraction_failure_falls_back_to_grounded_local_rules() -> None:
+    class RateLimitedProvider:
+        def extract_problem(self, text: str, prompt: str):
+            del text, prompt
+            raise ExtractionError("OpenAI rate limit reached.")
+
+    provider = ResilientProblemExtractionProvider(
+        RateLimitedProvider(),
+        DeterministicMockExtractionProvider(),
+    )
+
+    result = provider.extract_problem(
+        "As a clinic manager, our manual process takes hours every week.",
+        "extract",
+    )
+
+    assert result.contains_real_problem is True
+    assert "manual process" in (result.problem_statement or "").lower()
+
+
+def test_embedding_failure_switches_to_local_vectors_for_the_batch() -> None:
+    class RejectedEmbeddingProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def embed(self, text: str) -> list[float]:
+            del text
+            self.calls += 1
+            raise EmbeddingError("OpenAI rejected the configured API key.")
+
+    primary = RejectedEmbeddingProvider()
+    provider = ResilientEmbeddingProvider(primary)
+
+    first = provider.embed("manual clinic referral follow-up")
+    second = provider.embed("clinic referral spreadsheet tracking")
+
+    assert len(first) == len(second) == 96
+    assert primary.calls == 1

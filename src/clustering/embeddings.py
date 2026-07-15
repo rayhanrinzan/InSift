@@ -153,12 +153,17 @@ class SentenceTransformerEmbeddingProvider:
         if self._model is None:
             try:
                 from sentence_transformers import SentenceTransformer
-            except ImportError as exc:
+                self._model = SentenceTransformer(self.model_name)
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
                 raise EmbeddingError(
-                    "Sentence Transformers is not installed. Install requirements or enable demo mode."
+                    "The local semantic embedding model is unavailable."
                 ) from exc
-            self._model = SentenceTransformer(self.model_name)
-        vector = self._model.encode(text, normalize_embeddings=True)
+        try:
+            vector = self._model.encode(text, normalize_embeddings=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise EmbeddingError(
+                "The local semantic embedding model could not encode the text."
+            ) from exc
         return [float(value) for value in vector]
 
 
@@ -176,6 +181,28 @@ class OpenAIEmbeddingProvider:
             raise EmbeddingError(str(exc)) from exc
 
 
+class ResilientEmbeddingProvider:
+    """Use a configured embedding provider with a dimension-safe local fallback."""
+
+    def __init__(self, primary: EmbeddingProvider) -> None:
+        self.primary = primary
+        self.primary_available = True
+        self.fallback: DeterministicEmbeddingProvider | None = None
+
+    def embed(self, text: str) -> list[float]:
+        if self.primary_available:
+            try:
+                vector = self.primary.embed(text)
+                if self.fallback is None:
+                    self.fallback = DeterministicEmbeddingProvider(len(vector))
+                return vector
+            except EmbeddingError:
+                self.primary_available = False
+        if self.fallback is None:
+            self.fallback = DeterministicEmbeddingProvider()
+        return self.fallback.embed(text)
+
+
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
     """Build the configured provider, using deterministic embeddings in demo mode."""
 
@@ -185,17 +212,21 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
     }:
         return DeterministicEmbeddingProvider()
     if settings.embedding_provider.lower() == "sentence_transformers":
-        return SentenceTransformerEmbeddingProvider(settings.embedding_model)
+        return ResilientEmbeddingProvider(
+            SentenceTransformerEmbeddingProvider(settings.embedding_model)
+        )
     if settings.embedding_provider.lower() == "openai":
         if not settings.llm_api_key:
-            raise EmbeddingError("LLM_API_KEY is required for OpenAI embeddings.")
-        return OpenAIEmbeddingProvider(
-            OpenAIClient(
-                settings.llm_api_key.get_secret_value(),
-                model=settings.llm_model,
-                base_url=settings.openai_base_url,
-            ),
-            settings.embedding_model,
+            return DeterministicEmbeddingProvider()
+        return ResilientEmbeddingProvider(
+            OpenAIEmbeddingProvider(
+                OpenAIClient(
+                    settings.llm_api_key.get_secret_value(),
+                    model=settings.llm_model,
+                    base_url=settings.openai_base_url,
+                ),
+                settings.embedding_model,
+            )
         )
     raise EmbeddingError(
         f"Unsupported embedding provider: {settings.embedding_provider}"

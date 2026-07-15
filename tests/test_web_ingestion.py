@@ -47,8 +47,9 @@ def test_evidence_queries_target_selected_public_sources() -> None:
     assert len(queries) == 2
     assert all('"manual invoicing"' in query for query in queries)
     assert all('"small agencies"' in query for query in queries)
-    assert any("site:news.ycombinator.com" in query for query in queries)
-    assert any("site:github.com/issues" in query for query in queries)
+    assert any("forum community discussion" in query for query in queries)
+    assert any("public issue report" in query for query in queries)
+    assert all(len(query) < 400 for query in queries)
 
 
 def test_evidence_queries_require_topic_and_source() -> None:
@@ -64,7 +65,8 @@ def test_automated_queries_use_broad_unquoted_terms() -> None:
 
     assert "patient referral follow-up" not in query
     assert segment.search_terms in query
-    assert "site:news.ycombinator.com" in query
+    assert "site:" not in query
+    assert len(query) < 400
 
 
 def test_web_discovery_deduplicates_urls_and_preserves_queries() -> None:
@@ -72,13 +74,15 @@ def test_web_discovery_deduplicates_urls_and_preserves_queries() -> None:
         [
             SearchResult(
                 title="Manual invoicing complaint",
-                url="https://example.com/discussion?utm_source=test",
+                url=(
+                    "https://news.ycombinator.com/item?id=42&utm_source=test"
+                ),
                 snippet="This manual process takes hours every week.",
                 score=0.8,
             ),
             SearchResult(
                 title="Manual invoicing complaint",
-                url="https://example.com/discussion",
+                url="https://news.ycombinator.com/item?id=42",
                 snippet="This manual process takes hours every week and is frustrating.",
                 score=0.9,
             ),

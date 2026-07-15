@@ -12,7 +12,7 @@ from src.clustering.clusterer import ClusterAssignment, IncrementalClusterer
 from src.clustering.embeddings import build_embedding_provider
 from src.config import Settings
 from src.database.models import EvidenceItem, OpportunityScore
-from src.database.repositories import EvidenceRepository
+from src.database.repositories import ClusterRepository, EvidenceRepository
 from src.extraction.problem_extractor import (
     ProblemExtractor,
     build_problem_extraction_provider,
@@ -55,6 +55,7 @@ class DiscoveryService:
         self.scorer = scorer
         self.minimum_confidence = minimum_confidence
         self.evidence = EvidenceRepository(session)
+        self.clusters = ClusterRepository(session)
 
     def process(self, submission: SourceSubmission) -> DiscoveryResult:
         """Extract, persist, cluster, and score one normalized source."""
@@ -65,11 +66,21 @@ class DiscoveryService:
         )
         if existing is not None:
             extraction = self._extraction_from_evidence(existing)
+            assignment = None
+            score = None
+            if (
+                existing.contains_problem
+                and not self.clusters.cluster_ids_for_evidence(existing.id)
+            ):
+                assignment = self.clusterer.assign(existing)
+                score = self.scorer.score_cluster(assignment.cluster.id)
             return DiscoveryResult(
                 evidence=existing,
                 extraction=extraction,
                 accepted=existing.contains_problem,
                 duplicate=True,
+                assignment=assignment,
+                score=score,
             )
 
         log_event(

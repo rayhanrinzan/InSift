@@ -8,7 +8,9 @@ from urllib.parse import urlsplit
 
 from src.ingestion.manual import IngestionError, build_source_external_id
 from src.ingestion.schemas import SourceSubmission
+from src.ingestion.source_urls import is_public_source_url
 from src.research.competitor_search import SearchProvider, canonical_url
+from src.research.public_discussion_search import is_supported_discussion_url
 from src.research.schemas import SearchResult
 
 
@@ -22,12 +24,9 @@ WEB_SOURCE_LABELS: dict[str, str] = {
 }
 
 SOURCE_FILTERS: dict[str, str] = {
-    "forums": (
-        "(site:news.ycombinator.com OR site:indiehackers.com OR "
-        "site:stackoverflow.com OR site:discourse.org)"
-    ),
-    "issues": "site:github.com/issues",
-    "reviews": "(site:g2.com OR site:capterra.com OR site:trustpilot.com)",
+    "forums": "forum community discussion",
+    "issues": "public issue report",
+    "reviews": "software product review",
     "web": "",
 }
 
@@ -90,8 +89,10 @@ def generate_evidence_queries(
     )
     if not cleaned_topic:
         raise IngestionError("Enter a market, workflow, or problem to search.")
-    if len(cleaned_topic) > 300 or len(cleaned_customer) > 200:
-        raise IngestionError("Search topic or target customer is too long.")
+    if len(cleaned_topic) > 100 or len(cleaned_customer) > 80:
+        raise IngestionError(
+            "Keep the search topic under 100 characters and target customer under 80."
+        )
     if not source_types:
         raise IngestionError("Select at least one source type.")
 
@@ -142,6 +143,7 @@ class WebEvidenceDiscoveryService:
         )
         per_query = min(10, max(3, ceil(max_results / len(queries))))
         candidates: dict[str, WebEvidenceCandidate] = {}
+        require_discussion_url = "web" not in source_types
 
         for query in queries:
             for result in self.provider.search(
@@ -151,6 +153,12 @@ class WebEvidenceDiscoveryService:
             ):
                 candidate = candidate_from_search_result(result, query=query)
                 if candidate is None:
+                    continue
+                if not is_public_source_url(candidate.url):
+                    continue
+                if require_discussion_url and not is_supported_discussion_url(
+                    candidate.url
+                ):
                     continue
                 key = canonical_url(candidate.url)
                 existing = candidates.get(key)

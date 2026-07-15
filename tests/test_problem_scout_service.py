@@ -8,6 +8,8 @@ from src.clustering.embeddings import DeterministicEmbeddingProvider
 from src.database.repositories import ClusterRepository
 from src.extraction.opportunity_synthesizer import (
     DeterministicOpportunitySynthesizer,
+    OpportunitySynthesisError,
+    ResilientOpportunitySynthesizer,
 )
 from src.extraction.problem_extractor import (
     DeterministicMockExtractionProvider,
@@ -132,10 +134,31 @@ def test_scout_keeps_one_off_evidence_out_of_opportunity_pages(
     assert clusters[0].status == "archived"
 
 
+def test_scout_uses_local_synthesis_when_openai_is_rate_limited(
+    db_session: Session,
+) -> None:
+    class RateLimitedSynthesizer:
+        def synthesize(self, cluster, evidence_items):
+            del cluster, evidence_items
+            raise OpportunitySynthesisError("OpenAI rate limit reached.")
+
+    run = ProblemScoutService(
+        StaticLiveSearchProvider(_repeated_problem_results()),
+        _discovery(db_session),
+        ResilientOpportunitySynthesizer(
+            RateLimitedSynthesizer(),
+            DeterministicOpportunitySynthesizer(),
+        ),
+    ).run(focus="healthcare", segment_limit=1, results_per_segment=2)
+
+    assert len(run.opportunities) == 1
+    assert "referral" in run.opportunities[0].problem_summary.lower()
+
+
 def test_scout_rejects_mock_search_and_placeholder_sources(
     db_session: Session,
 ) -> None:
-    with pytest.raises(LiveScoutConfigurationError, match="live Tavily"):
+    with pytest.raises(LiveScoutConfigurationError, match="real-source"):
         ProblemScoutService(
             MockSearchProvider(),
             _discovery(db_session),
@@ -161,3 +184,55 @@ def test_scout_rejects_mock_search_and_placeholder_sources(
     assert run.outcomes == ()
     assert run.opportunities == ()
     assert ClusterRepository(db_session).list(limit=10) == []
+
+
+def test_scout_rejects_generic_pages_solicitations_and_vendor_posts(
+    db_session: Session,
+) -> None:
+    provider = StaticLiveSearchProvider(
+        [
+            SearchResult(
+                title="Small business discussions",
+                url="https://www.reddit.com/r/smallbusiness/",
+                snippet="What repetitive tasks take the most time?",
+                score=0.95,
+            ),
+            SearchResult(
+                title="Tell me about your clinic problems",
+                url="https://www.reddit.com/r/healthcare/comments/research/problems/",
+                snippet=(
+                    "I am doing some research and would love to hear what manual "
+                    "clinic work is frustrating."
+                ),
+                score=0.92,
+            ),
+            SearchResult(
+                title="We automated a clinic",
+                url="https://www.reddit.com/r/SaaS/comments/vendor/clinic_automation/",
+                snippet=(
+                    "Here is the system we built for a clinic with a manual "
+                    "spreadsheet process."
+                ),
+                score=0.90,
+            ),
+            SearchResult(
+                title="Referral handoffs keep getting missed",
+                url="https://www.reddit.com/r/healthIT/comments/real/referrals/",
+                snippet=(
+                    "As a clinic manager, our referral spreadsheet is manual and "
+                    "we keep missing follow-up every week."
+                ),
+                score=0.88,
+            ),
+        ]
+    )
+
+    run = ProblemScoutService(
+        provider,
+        _discovery(db_session),
+        DeterministicOpportunitySynthesizer(),
+    ).run(focus="healthcare", segment_limit=1, results_per_segment=4)
+
+    assert [outcome.source.evidence.url for outcome in run.outcomes] == [
+        "https://www.reddit.com/r/healthIT/comments/real/referrals/"
+    ]
