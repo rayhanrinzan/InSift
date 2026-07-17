@@ -76,3 +76,33 @@ def test_duplicate_evidence_does_not_inflate_counts(db_session: Session) -> None
     assert second.cluster.id == first.cluster.id
     assert second.cluster.evidence_count == 1
     assert len(second.cluster.evidence_links) == 1
+
+
+def test_scout_workflow_anchor_joins_source_wording_variants(
+    db_session: Session,
+) -> None:
+    first_item = _evidence(
+        db_session,
+        "source-one",
+        "The tracking app cannot display customer shipment status",
+    )
+    second_item = _evidence(
+        db_session,
+        "source-two",
+        "Staff send an Excel order file to suppliers every evening",
+    )
+    first_item.metadata_json = {"scout_workflow_topic": "order tracking customer emails"}
+    second_item.metadata_json = {"scout_workflow_topic": "order tracking customer emails"}
+    db_session.commit()
+    clusterer = IncrementalClusterer(
+        db_session,
+        FixedEmbeddingProvider(),
+        threshold=0.8,
+    )
+
+    first = clusterer.assign(first_item)
+    second = clusterer.assign(second_item)
+
+    assert second.cluster.id == first.cluster.id
+    assert second.similarity_score >= 0.86
+    assert second.created is False

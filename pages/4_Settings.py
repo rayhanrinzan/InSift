@@ -73,7 +73,7 @@ def main() -> None:
 
     section_header(
         "Provider readiness",
-        "Discovery uses local analysis and public community APIs when paid providers are unavailable.",
+        "Discovery uses GitHub, Hacker News, Stack Exchange, and public support communities when paid providers are unavailable.",
     )
     live_extraction_ready = bool(
         not settings.demo_mode and settings.discovery_ready

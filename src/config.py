@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     embedding_model: str = Field("all-MiniLM-L6-v2", env="EMBEDDING_MODEL")
     search_provider: Optional[str] = Field("community", env="SEARCH_PROVIDER")
     search_api_key: Optional[SecretStr] = Field(None, env="SEARCH_API_KEY")
+    github_api_token: Optional[SecretStr] = Field(None, env="GITHUB_TOKEN")
     search_depth: str = Field("basic", env="SEARCH_DEPTH")
     cluster_similarity_threshold: float = Field(
         0.78, env="CLUSTER_SIMILARITY_THRESHOLD", ge=0.0, le=1.0
@@ -161,6 +162,7 @@ EDITABLE_ENV_KEYS = {
     "EMBEDDING_MODEL",
     "SEARCH_PROVIDER",
     "SEARCH_API_KEY",
+    "GITHUB_TOKEN",
     "SEARCH_DEPTH",
     "CLUSTER_SIMILARITY_THRESHOLD",
     "MINIMUM_EXTRACTION_CONFIDENCE",

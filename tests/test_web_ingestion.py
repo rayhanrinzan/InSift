@@ -67,6 +67,7 @@ def test_automated_queries_use_broad_unquoted_terms() -> None:
     assert "clinic operations" in query
     assert segment.search_terms not in query
     assert "site:" not in query
+    assert "reddit" not in query.lower()
     assert len(query) < 400
 
 
@@ -119,6 +120,38 @@ def test_candidate_becomes_attributable_submission() -> None:
     assert submission.source_url == "https://community.example/clinic-problem"
     assert submission.community == "community.example"
     assert submission.metadata_json["ingestion_method"] == "web_search"
+
+
+def test_candidate_preserves_source_native_attribution() -> None:
+    candidate = candidate_from_search_result(
+        SearchResult(
+            title="Manual inventory reconciliation loses adjustments",
+            url="https://github.com/example/inventory/issues/42",
+            snippet="The manual reconciliation fails and creates inventory errors.",
+            content=(
+                "Our warehouse team manually reconciles inventory every day. "
+                "The current process fails when two adjustments overlap, and staff "
+                "must repair the spreadsheet by hand."
+            ),
+            score=0.88,
+            metadata={
+                "source_platform": "github",
+                "source_kind": "issue",
+                "source_author": "warehouse-user",
+                "published_at": "2026-06-01T10:30:00Z",
+                "engagement_count": 7,
+            },
+        ),
+        query="inventory reconciliation problem workaround",
+    )
+
+    assert candidate is not None
+    submission = candidate.to_submission()
+    assert submission.platform == "github"
+    assert submission.source_author == "warehouse-user"
+    assert submission.published_at is not None
+    assert submission.engagement_score == 7
+    assert submission.metadata_json["source_kind"] == "issue"
 
 
 def test_demo_search_returns_problem_evidence() -> None:

@@ -87,7 +87,7 @@ The committed Streamlit configuration keeps the server in headless mode so Commu
 - Set `LLM_PROVIDER=openai`, `EMBEDDING_PROVIDER=openai` or `sentence_transformers`, and `SEARCH_PROVIDER=tavily`.
 - Set `LOG_LEVEL=INFO` or the platform's preferred level.
 - Use managed PostgreSQL with encrypted connections, backups, and restricted credentials.
-- Store `LLM_API_KEY`, `SEARCH_API_KEY`, and `REDDIT_CLIENT_SECRET` only in a secret manager.
+- Store `LLM_API_KEY`, `SEARCH_API_KEY`, `GITHUB_TOKEN`, and `REDDIT_CLIENT_SECRET` only in a secret manager.
 - Configure `REDDIT_CLIENT_ID` and a descriptive `REDDIT_USER_AGENT` before enabling Reddit intake.
 - Restrict database network access to the application environment.
 - Route container health checks to `/_stcore/health`.

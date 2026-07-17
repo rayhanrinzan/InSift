@@ -90,6 +90,11 @@ class DiscoveryService:
             {"platform": submission.platform, "text_length": len(submission.raw_text)},
         )
         extraction = self.extractor.extract(submission.raw_text)
+        scout_segment = str(
+            submission.metadata_json.get("scout_segment_label") or ""
+        ).strip()
+        if scout_segment:
+            extraction = extraction.copy(update={"affected_user": scout_segment})
         accepted = bool(
             extraction.has_usable_problem
             and extraction.confidence >= self.minimum_confidence

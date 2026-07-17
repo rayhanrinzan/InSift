@@ -79,6 +79,8 @@ class IncrementalClusterer:
             if centroid is None or len(centroid) != len(embedding):
                 continue
             similarity = cosine_similarity(embedding, centroid)
+            if self._shares_scout_workflow(evidence_item, cluster):
+                similarity = max(similarity, 0.86)
             if similarity > best_similarity:
                 best_cluster = cluster
                 best_similarity = similarity
@@ -176,7 +178,9 @@ class IncrementalClusterer:
             if not item.problem_statement:
                 continue
             if not item.embedding:
-                item.embedding = self.embedding_provider.embed(item.problem_statement)
+                item.embedding = self.embedding_provider.embed(
+                    self._embedding_text(item)
+                )
                 self.session.add(item)
                 changed = True
             vectors.append(item.embedding)
@@ -187,10 +191,37 @@ class IncrementalClusterer:
     def _ensure_embedding(self, evidence_item: EvidenceItem) -> list[float]:
         if not evidence_item.embedding:
             evidence_item.embedding = self.embedding_provider.embed(
-                evidence_item.problem_statement or ""
+                self._embedding_text(evidence_item)
             )
             self.evidence.save(evidence_item)
         return evidence_item.embedding
+
+    @staticmethod
+    def _embedding_text(evidence_item: EvidenceItem) -> str:
+        problem = evidence_item.problem_statement or ""
+        workflow_topic = str(
+            (evidence_item.metadata_json or {}).get("scout_workflow_topic") or ""
+        ).strip()
+        return f"{workflow_topic}. {problem}" if workflow_topic else problem
+
+    @staticmethod
+    def _shares_scout_workflow(
+        evidence_item: EvidenceItem,
+        cluster: OpportunityCluster,
+    ) -> bool:
+        workflow_topic = str(
+            (evidence_item.metadata_json or {}).get("scout_workflow_topic") or ""
+        ).strip()
+        if not workflow_topic:
+            return False
+        return any(
+            str(
+                (link.evidence_item.metadata_json or {}).get("scout_workflow_topic")
+                or ""
+            ).strip()
+            == workflow_topic
+            for link in cluster.evidence_links
+        )
 
     @staticmethod
     def _most_common(values: list[str]) -> str | None:

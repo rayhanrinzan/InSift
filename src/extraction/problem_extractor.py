@@ -137,6 +137,12 @@ EVIDENCE_PHRASES = (
     "tedious",
     "painful",
     "frustrating",
+    "can't",
+    "doesn't work",
+    "not work",
+    "not working",
+    "won't work",
+    "keeps failing",
 )
 
 SUPPORTING_PATTERNS = (
@@ -215,7 +221,21 @@ PAIN_PATTERNS: dict[PainType, tuple[str, ...]] = {
     "labor": ("manual", "manually", "staff", "labor"),
     "cost": ("expensive", "cost", "overpay", "paying"),
     "lost_revenue": ("lose money", "lost revenue", "missed revenue", "overpay"),
-    "risk": ("risk", "missed", "easy to miss", "error"),
+    "risk": (
+        "risk",
+        "missed",
+        "easy to miss",
+        "error",
+        "fails",
+        "failing",
+        "broken",
+        "can't",
+        "doesn't work",
+        "not work",
+        "not working",
+        "won't work",
+        "cannot",
+    ),
     "compliance": ("compliance", "audit", "regulation"),
     "coordination": ("coordinate", "handoff", "inboxes", "reminders", "follow-up"),
     "data_entry": (
@@ -304,20 +324,36 @@ class DeterministicMockExtractionProvider:
 
     @staticmethod
     def _problem_statement(text: str) -> str:
-        """Keep all evidence-bearing sentences so clustering retains useful context."""
+        """Keep a concise source-grounded statement for reliable clustering."""
 
         sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", text)]
         relevant = []
         for sentence in sentences:
             normalized = sentence.lower()
             if any(
+                marker in normalized
+                for marker in (
+                    "our app",
+                    "recommend you use",
+                    "book a demo",
+                    "free trial",
+                    "we built",
+                    "shopify app store",
+                    "related topics",
+                )
+            ):
+                continue
+            if any(
                 phrase in normalized
                 for phrases in PAIN_PATTERNS.values()
                 for phrase in phrases
             ) or any(phrase in normalized for phrase in EVIDENCE_PHRASES):
                 relevant.append(sentence)
+            if len(relevant) >= 3:
+                break
         statement = " ".join(relevant) or text.strip()
-        return statement[:500].rstrip()
+        statement = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", statement)
+        return statement[:420].rstrip()
 
     @staticmethod
     def _affected_user(text: str) -> str | None:

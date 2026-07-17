@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -199,12 +200,12 @@ SCOUT_QUERY_ANCHORS: dict[str, str] = {
 }
 
 SCOUT_SEARCH_LENSES: tuple[str, ...] = (
-    "manual frustrating",
-    "takes hours spreadsheet",
-    "backlog overwhelmed",
-    "manual spreadsheet",
-    "takes hours spreadsheet",
-    "manual repetitive",
+    "problem workaround",
+    "feature request manual",
+    "cannot automate repetitive",
+    "errors missed handoffs",
+    "too expensive workaround",
+    "takes hours every week",
 )
 
 SCOUT_WORKFLOW_TOPICS: dict[str, tuple[str, ...]] = {
@@ -353,6 +354,14 @@ OPERATIONAL_PAIN_MARKERS = (
     "tedious",
     "annoying",
     "broken",
+    "cannot",
+    "can't",
+    "doesn't work",
+    "not work",
+    "not working",
+    "won't work",
+    "fails",
+    "failing",
 )
 SOLICITATION_MARKERS = (
     "doing some research",
@@ -375,6 +384,41 @@ SOLICITATION_MARKERS = (
     "person i talked to",
     "direct quote from",
     "market research",
+    "who is hiring",
+    "we're hiring",
+    "we are hiring",
+    "looking for a principal engineer",
+    "apply at",
+)
+
+ISSUE_PROBLEM_MARKERS = (
+    "actual behavior",
+    "expected behavior",
+    "bug",
+    "broken",
+    "cannot",
+    "can't",
+    "doesn't work",
+    "error",
+    "fails",
+    "feature request",
+    "limitation",
+    "missing",
+    "not work",
+    "not working",
+    "won't work",
+    "problem",
+    "reproduction",
+    "workaround",
+)
+
+PLANNING_DOCUMENT_MARKERS = (
+    "## acceptance criteria",
+    "## dependencies",
+    "## implementation plan",
+    "## scope when picked up",
+    "est. man-days",
+    "migrated-to-kanban",
 )
 
 
@@ -384,6 +428,7 @@ class SourcedDiscussion:
 
     evidence: WebEvidenceCandidate
     segment: CustomerSegment
+    workflow_topic: str
 
     def to_submission(self) -> SourceSubmission:
         submission = self.evidence.to_submission()
@@ -391,6 +436,7 @@ class SourcedDiscussion:
             **submission.metadata_json,
             "scout_segment": self.segment.key,
             "scout_segment_label": self.segment.label,
+            "scout_workflow_topic": self.workflow_topic,
         }
         source_text = f"{self.evidence.title}. {submission.raw_text}"[:20_000]
         return submission.copy(
@@ -437,6 +483,13 @@ class ProblemScoutRun:
     def new_source_count(self) -> int:
         return sum(not outcome.result.duplicate for outcome in self.outcomes)
 
+    @property
+    def source_breakdown(self) -> tuple[tuple[str, int], ...]:
+        counts = Counter(
+            outcome.source.evidence.source_platform for outcome in self.outcomes
+        )
+        return tuple(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
 
 @dataclass(frozen=True)
 class OpportunitySourceSummary:
@@ -446,6 +499,9 @@ class OpportunitySourceSummary:
     url: str
     domain: str
     excerpt: str
+    source_type: str = "web"
+    source_author: str | None = None
+    engagement_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -502,7 +558,7 @@ def build_problem_query(
 
     topic = _workflow_topic(segment, scan_round=scan_round, attempt=attempt)
     lens = SCOUT_SEARCH_LENSES[((scan_round * 2) + attempt) % len(SCOUT_SEARCH_LENSES)]
-    query = f"{SCOUT_QUERY_ANCHORS[segment.key]} {topic} {lens} reddit"
+    query = f'{SCOUT_QUERY_ANCHORS[segment.key]} "{topic}" {lens}'
     return " ".join(query.split())
 
 
@@ -555,6 +611,10 @@ def _is_scoutable_discussion(evidence: WebEvidenceCandidate) -> bool:
     title = evidence.title.lower()
     if "/compare/" in path:
         return False
+    if evidence.source_platform == "github" and title.startswith(
+        ("problem:", "epic-", "[epic]", "roadmap:", "tracking:")
+    ):
+        return False
     return not (title.startswith("compare ") or "pricing, alternatives & more" in title)
 
 
@@ -577,6 +637,60 @@ def _contains_first_hand_problem(evidence: WebEvidenceCandidate) -> bool:
     first_hand = any(marker in padded for marker in FIRST_HAND_MARKERS)
     pain_signal_count = sum(marker in padded for marker in FIRST_HAND_PAIN_MARKERS)
     return first_hand and pain_signal_count >= 1
+
+
+def _contains_source_native_problem(evidence: WebEvidenceCandidate) -> bool:
+    """Recognize explicit issue and support requests without requiring first person."""
+
+    text = " ".join((evidence.title, evidence.raw_text[:6_000])).lower()
+    if evidence.source_platform == "github":
+        planning_markers = sum(marker in text for marker in PLANNING_DOCUMENT_MARKERS)
+        if planning_markers >= 2:
+            return False
+        return any(marker in text for marker in ISSUE_PROBLEM_MARKERS) and any(
+            marker in text for marker in OPERATIONAL_PAIN_MARKERS
+        )
+    if evidence.source_platform in {"stack_exchange", "support_community"}:
+        return _contains_first_hand_problem(evidence) or (
+            any(marker in text for marker in ISSUE_PROBLEM_MARKERS)
+            and any(marker in text for marker in OPERATIONAL_PAIN_MARKERS)
+        )
+    return _contains_first_hand_problem(evidence)
+
+
+def _has_enough_source_detail(evidence: WebEvidenceCandidate) -> bool:
+    """Reject snippets that are too thin to support an explainable product claim."""
+
+    text_length = len(" ".join(evidence.raw_text.split()))
+    if evidence.source_platform in {"github", "stack_exchange"}:
+        minimum = 180
+    elif evidence.source_platform in {"hacker_news", "reddit"}:
+        minimum = 80
+    else:
+        minimum = 120
+    return text_length >= minimum
+
+
+def _source_token_set(evidence: WebEvidenceCandidate) -> set[str]:
+    fingerprint_text = f"{evidence.title} {evidence.snippet[:1_200]}"
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", fingerprint_text.lower())
+        if len(token) >= 4
+    }
+
+
+def _is_near_duplicate_source(
+    evidence: WebEvidenceCandidate,
+    accepted_token_sets: list[set[str]],
+) -> bool:
+    tokens = _source_token_set(evidence)
+    if not tokens:
+        return True
+    return any(
+        len(tokens & existing) / max(1, min(len(tokens), len(existing))) >= 0.78
+        for existing in accepted_token_sets
+    )
 
 
 class ProblemScoutService:
@@ -618,9 +732,9 @@ class ProblemScoutService:
     ) -> ProblemScoutRun:
         """Run one complete search-to-database discovery cycle."""
 
-        if not 1 <= results_per_segment <= 10:
+        if not 1 <= results_per_segment <= 20:
             raise IngestionError(
-                "Results per customer segment must be between 1 and 10."
+                "Results per customer segment must be between 1 and 20."
             )
         segments = select_customer_segments(
             focus,
@@ -685,6 +799,7 @@ class ProblemScoutService:
         seen_urls: set[str] = set(stored_urls)
         previously_seen_urls: set[str] = set()
         sources: list[SourcedDiscussion] = []
+        accepted_token_sets: list[set[str]] = []
         query_count = 0
         total = max(1, len(segments))
         for index, segment in enumerate(segments, start=1):
@@ -694,7 +809,8 @@ class ProblemScoutService:
                     f"Searching public discussions for {segment.label}",
                 )
             segment_source_count = 0
-            for attempt in range(3):
+            domain_counts: dict[str, int] = {}
+            for attempt in range(2):
                 query = build_problem_query(
                     segment,
                     scan_round=scan_round,
@@ -721,6 +837,8 @@ class ProblemScoutService:
                         continue
                     if not _is_scoutable_discussion(evidence):
                         continue
+                    if not _has_enough_source_detail(evidence):
+                        continue
                     if not _matches_segment(evidence, segment):
                         continue
                     url_key = canonical_url(evidence.url)
@@ -731,14 +849,25 @@ class ProblemScoutService:
                         continue
                     if not _matches_workflow(evidence, workflow_topic):
                         continue
-                    if not _contains_first_hand_problem(evidence):
+                    if not _contains_source_native_problem(evidence):
+                        continue
+                    if _is_near_duplicate_source(evidence, accepted_token_sets):
+                        continue
+                    domain = urlsplit(evidence.url).netloc.lower().removeprefix("www.")
+                    if domain_counts.get(domain, 0) >= 2:
                         continue
                     seen_urls.add(url_key)
+                    accepted_token_sets.append(_source_token_set(evidence))
+                    domain_counts[domain] = domain_counts.get(domain, 0) + 1
                     sources.append(
-                        SourcedDiscussion(evidence=evidence, segment=segment)
+                        SourcedDiscussion(
+                            evidence=evidence,
+                            segment=segment,
+                            workflow_topic=workflow_topic,
+                        )
                     )
                     segment_source_count += 1
-                if segment_source_count >= 2:
+                if segment_source_count >= 3:
                     break
         return sources, len(previously_seen_urls), query_count
 
@@ -908,6 +1037,11 @@ class ProblemScoutService:
                     url=item.source_url,
                     domain=item.community or urlsplit(item.source_url).netloc,
                     excerpt=" ".join(str(quote).split())[:500],
+                    source_type=item.platform,
+                    source_author=item.source_author,
+                    engagement_count=int(
+                        (item.metadata_json or {}).get("engagement_count") or 0
+                    ),
                 )
             )
 

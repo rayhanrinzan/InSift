@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from math import ceil
 import re
 from urllib.parse import urlsplit
@@ -11,7 +12,10 @@ from src.ingestion.manual import IngestionError, build_source_external_id
 from src.ingestion.schemas import SourceSubmission
 from src.ingestion.source_urls import is_public_source_url
 from src.research.competitor_search import SearchProvider, canonical_url
-from src.research.public_discussion_search import is_supported_discussion_url
+from src.research.public_discussion_search import (
+    SUPPORT_COMMUNITY_HOSTS,
+    is_supported_discussion_url,
+)
 from src.research.schemas import SearchResult
 
 
@@ -61,6 +65,11 @@ class WebEvidenceCandidate:
     snippet: str
     score: float
     source_queries: tuple[str, ...]
+    source_platform: str = "web"
+    source_kind: str = "discussion"
+    source_author: str | None = None
+    published_at: datetime | None = None
+    engagement_count: int = 0
 
     @property
     def preview(self) -> str:
@@ -73,18 +82,23 @@ class WebEvidenceCandidate:
         """Normalize this candidate for the shared discovery pipeline."""
 
         return SourceSubmission(
-            platform="web",
+            platform=self.source_platform,
             raw_text=self.raw_text,
             source_url=self.url,
             source_external_id=build_source_external_id(self.raw_text, self.url),
+            source_author=self.source_author,
+            published_at=self.published_at,
             community=self.domain,
             title=self.title,
-            engagement_score=self.score,
+            engagement_score=float(self.engagement_count or self.score),
             metadata_json={
                 "ingestion_method": "web_search",
                 "search_queries": list(self.source_queries),
                 "search_score": self.score,
                 "search_snippet": self.snippet[:1_000],
+                "source_platform": self.source_platform,
+                "source_kind": self.source_kind,
+                "engagement_count": self.engagement_count,
             },
         )
 
@@ -215,6 +229,7 @@ def candidate_from_search_result(
     domain = urlsplit(url).netloc.lower().removeprefix("www.")
     if not domain:
         return None
+    metadata = result.metadata or {}
     return WebEvidenceCandidate(
         title=result.title.strip() or "Untitled public discussion",
         url=url,
@@ -223,6 +238,13 @@ def candidate_from_search_result(
         snippet=snippet,
         score=float(result.score),
         source_queries=(query,),
+        source_platform=str(
+            metadata.get("source_platform") or _source_platform_from_domain(domain)
+        ),
+        source_kind=str(metadata.get("source_kind") or "discussion"),
+        source_author=_optional_text(metadata.get("source_author")),
+        published_at=_source_datetime(metadata.get("published_at")),
+        engagement_count=_non_negative_int(metadata.get("engagement_count")),
     )
 
 
@@ -230,8 +252,58 @@ def _clean_source_text(value: str | None) -> str:
     """Remove common search-indexed page chrome from public discussion text."""
 
     text = str(value or "")
+    for trailing_section in (
+        "Related topics | Topic |",
+        "Powered by Discourse",
+        "Similar topics | Topic |",
+    ):
+        text = text.split(trailing_section, 1)[0]
     for phrase in SOURCE_PAGE_BOILERPLATE:
         text = text.replace(phrase, " ")
     text = re.sub(r"(?:^|\s)#{1,6}\s*", " ", text)
     text = re.sub(r"\bTitle:\s*", "", text, flags=re.IGNORECASE)
     return " ".join(text.split())
+
+
+def _source_platform_from_domain(domain: str) -> str:
+    if domain == "github.com" or domain.endswith(".github.com"):
+        return "github"
+    if domain == "news.ycombinator.com":
+        return "hacker_news"
+    if domain in {"stackoverflow.com", "serverfault.com", "superuser.com", "askubuntu.com"}:
+        return "stack_exchange"
+    if domain.endswith(".stackexchange.com"):
+        return "stack_exchange"
+    if domain in SUPPORT_COMMUNITY_HOSTS:
+        return "support_community"
+    if domain in {"g2.com", "capterra.com", "trustpilot.com"}:
+        return "product_review"
+    if domain == "reddit.com" or domain.endswith(".reddit.com"):
+        return "reddit"
+    return "web"
+
+
+def _source_datetime(value: object) -> datetime | None:
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _optional_text(value: object) -> str | None:
+    cleaned = str(value or "").strip()
+    return cleaned or None
+
+
+def _non_negative_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0

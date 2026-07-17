@@ -62,6 +62,21 @@ from src.ui.formatting import format_datetime, format_score
 from src.ui.navigation import render_page_link
 
 
+SOURCE_PLATFORM_LABELS = {
+    "github": "GitHub issue",
+    "hacker_news": "Hacker News",
+    "stack_exchange": "Stack Exchange",
+    "support_community": "Product support community",
+    "product_review": "Product review",
+    "reddit": "Reddit",
+    "web": "Public web",
+}
+
+
+def _source_platform_label(value: str) -> str:
+    return SOURCE_PLATFORM_LABELS.get(value, value.replace("_", " ").title())
+
+
 def _render_result(result: DiscoveryResult) -> None:
     """Render one ingestion outcome without exposing internal exceptions."""
 
@@ -299,7 +314,15 @@ def _render_discovered_opportunity(opportunity: DiscoveredOpportunity) -> None:
             for index, source in enumerate(opportunity.sources):
                 source_heading, source_action = st.columns([4, 1])
                 source_heading.markdown(f"**{source.title}**")
-                source_heading.caption(source.domain)
+                source_details = [
+                    _source_platform_label(source.source_type),
+                    source.domain,
+                ]
+                if source.source_author:
+                    source_details.append(f"by {source.source_author}")
+                if source.engagement_count:
+                    source_details.append(f"{source.engagement_count} interactions")
+                source_heading.caption(" | ".join(source_details))
                 source_action.link_button(
                     "Open source",
                     source.url,
@@ -328,6 +351,14 @@ def _render_scout_run(run: ProblemScoutRun) -> None:
         f"{run.duplicate_count} previously seen skipped | "
         f"{run.search_query_count} searches run"
     )
+    if run.source_breakdown:
+        st.caption(
+            "Source coverage: "
+            + " | ".join(
+                f"{_source_platform_label(platform)} {count}"
+                for platform, count in run.source_breakdown
+            )
+        )
     if not run.outcomes:
         st.info(
             "Scan complete. No new qualifying discussions were found in this "
@@ -419,6 +450,10 @@ def _render_opportunity_scout(
         index=0,
     )
     focus = label_to_focus[selected_focus_label]
+    st.caption(
+        "Scanning GitHub issues, Hacker News, Stack Exchange, and public product-support communities. "
+        "Reddit is not used by Opportunity Scout."
+    )
     stored_focus = st.session_state.get("problem-scout-focus")
     has_results = stored_focus == focus and "problem-scout-run" in st.session_state
     scan_submitted = st.button(
@@ -460,7 +495,7 @@ def _render_opportunity_scout(
                     run = scout.run(
                         focus=focus,
                         segment_limit=4,
-                        results_per_segment=8,
+                        results_per_segment=12,
                         offset=scan_index * 4,
                         scan_round=scan_index,
                         progress_callback=update_progress,
@@ -599,7 +634,7 @@ def main() -> None:
         )
 
     web_tab, manual_tab, csv_tab, reddit_tab = st.tabs(
-        ["Opportunity scout", "Paste discussion", "Upload CSV", "Reddit"]
+        ["Opportunity scout", "Paste discussion", "Upload CSV", "Reddit (optional)"]
     )
     with web_tab:
         discovery_mode = st.segmented_control(

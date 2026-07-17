@@ -116,7 +116,9 @@ def test_community_fallback_reduces_scout_query_to_workflow_terms() -> None:
         "manual takes hours frustrating reddit"
     )
 
-    assert _plain_query(query) == "order tracking customer emails"
+    assert _plain_query(query) == (
+        "ecommerce operations order tracking customer emails"
+    )
 
 
 def test_tavily_request_uses_domain_filter() -> None:
@@ -146,5 +148,50 @@ def test_supported_discussion_urls_reject_generic_domain_pages() -> None:
     assert is_supported_discussion_url(
         "https://github.com/example/project/issues/42"
     )
+    assert is_supported_discussion_url(
+        "https://community.airtable.com/t/automation-keeps-failing/12345"
+    )
     assert not is_supported_discussion_url("https://www.reddit.com/r/healthIT/")
+    assert not is_supported_discussion_url("https://community.airtable.com/latest")
     assert not is_supported_discussion_url("https://example.org/discussion")
+
+
+def test_community_search_returns_detailed_github_issue_metadata() -> None:
+    def opener(request: Any, *, timeout: float) -> StubResponse:
+        del timeout
+        if "hn.algolia.com" in request.full_url:
+            return StubResponse({"hits": []})
+        if "stackexchange.com" in request.full_url:
+            return StubResponse({"items": []})
+        return StubResponse(
+            {
+                "items": [
+                    {
+                        "title": "Inventory reconciliation fails after imports",
+                        "html_url": "https://github.com/example/inventory/issues/42",
+                        "body": (
+                            "Our inventory team manually repairs spreadsheet errors "
+                            "after every import. The reconciliation fails when two "
+                            "warehouse adjustments overlap and there is no workaround."
+                        ),
+                        "comments": 4,
+                        "created_at": "2026-06-01T10:30:00Z",
+                        "user": {"login": "operator"},
+                        "repository_url": "https://api.github.com/repos/example/inventory",
+                        "labels": [{"name": "bug"}],
+                        "reactions": {"total_count": 3},
+                    }
+                ]
+            }
+        )
+
+    results = CommunityAPISearchProvider(opener=opener).search(
+        "inventory reconciliation problem workaround",
+        max_results=5,
+        search_depth="basic",
+    )
+
+    assert len(results) == 1
+    assert results[0].metadata["source_platform"] == "github"
+    assert results[0].metadata["source_author"] == "operator"
+    assert results[0].metadata["engagement_count"] == 7
