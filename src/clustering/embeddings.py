@@ -58,6 +58,30 @@ CONCEPT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("coordinate", "coordination", "handoff", "owner", "status"),
     ("visibility", "stale", "reporting", "dashboard"),
     ("integrate", "integration", "sync", "systems", "api"),
+    (
+        "order tracking",
+        "tracking number",
+        "shipping update",
+        "shipment status",
+        "delivery status",
+    ),
+    (
+        "inventory reconciliation",
+        "inventory discrepancy",
+        "stock count",
+        "stock level",
+        "warehouse inventory",
+    ),
+    ("return", "returns", "refund", "refunds", "chargeback"),
+    ("purchase order", "supplier delivery", "supplier follow up", "procurement"),
+    ("client document", "content approval", "asset approval", "scope change"),
+    ("interview scheduling", "candidate screening", "interview feedback"),
+    ("maintenance request", "tenant communication", "vendor scheduling"),
+    ("change order", "subcontractor", "jobsite", "construction schedule"),
+    ("policy renewal", "insurance quote", "claim status", "carrier quote"),
+    ("technician dispatch", "service call", "service quote", "field service"),
+    ("production schedule", "quality issue", "material planning", "factory"),
+    ("audit preparation", "compliance evidence", "policy review", "regulatory report"),
 )
 
 STOP_WORDS = {

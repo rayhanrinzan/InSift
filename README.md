@@ -32,13 +32,13 @@ FLOWSIFT_PYTHON=/path/to/python bash scripts/run_app.sh --server.port 8502
 
 ## What "Fully Live" Means
 
-The core discovery workflow runs without paid provider credentials. It searches credential-free public community APIs, analyzes source text locally, and clusters evidence with deterministic local embeddings. OpenAI and Tavily improve analysis and search coverage when configured, but quota or request failures automatically fall back to the local path. Reddit collection still requires Reddit OAuth.
+The core discovery workflow runs without paid provider credentials. It searches source-native public APIs, analyzes source text locally, and clusters evidence with deterministic local embeddings. OpenAI and Tavily improve analysis and search coverage when configured, but quota or request failures automatically fall back to the local path. Reddit is an optional connector and is not used by Opportunity Scout.
 
 FlowSift AI's core workflow is live when local extraction, embeddings, and public search are ready:
 
 - **Extraction:** local evidence rules work without a key; OpenAI is an optional enhancement.
 - **Embeddings:** deterministic local embeddings work without a model download.
-- **Public search:** Hacker News and Stack Exchange APIs work without keys; Tavily broadens coverage.
+- **Public search:** GitHub issues, Hacker News, and Stack Exchange work without keys; Tavily adds product-support communities and broader coverage.
 - **Competitor research:** Tavily remains optional and is required for the dedicated competitor-research action.
 - **Reddit (optional):** approved Reddit OAuth credentials enable Reddit intake.
 
@@ -52,6 +52,7 @@ Optional provider credentials:
 
 - An [OpenAI API key](https://platform.openai.com/api-keys) for enhanced structured extraction and classification.
 - A [Tavily API key](https://app.tavily.com) for broader public-web coverage and competitor research.
+- Optional: a GitHub token to raise public issue-search rate limits. GitHub issue search works at a lower rate without one.
 - Optional: an approved [Reddit developer application](https://developers.reddit.com/app-registration) with a client ID and client secret for Reddit collection.
 
 No credential is required to use Opportunity Scout, topic search, manual paste, or CSV ingestion. Reddit may require application review or approval. Demo mode uses seeded fictional records for product evaluation; it never presents simulated search results as public sources.
@@ -104,7 +105,7 @@ The launcher initializes whichever database is named in `.env` before starting t
 1. Open **Discover**.
 2. Leave **Scout for me** and **Any market** selected.
 3. Click **Scan for opportunities**. No idea or search prompt is required.
-4. FlowSift AI searches real public discussions, extracts problems, clusters repeated evidence, and saves supported opportunities in one run.
+4. FlowSift AI searches real GitHub issues, Hacker News discussions, Stack Exchange questions, and product-support communities. It extracts problems, clusters repeated evidence, and saves supported opportunities in one run.
 5. Review each problem, target customer, current workaround, product direction, and original source URL.
 6. Click **Open full opportunity** to open the exact same record in **Opportunity Details**.
 7. Use **Search a topic** only when you already have a market or workflow to investigate.
@@ -135,7 +136,7 @@ Use **Discover** to add source evidence.
 
 **Opportunity scout** is the default discovery workflow. Click **Scan for opportunities** without entering an idea. FlowSift AI rotates through customer segments across healthcare, professional services, property and field services, commerce and supply chain, and people operations. It does not begin with prewritten problem ideas.
 
-Each scan searches real public discussions, extracts first-hand problems, and clusters related evidence. A result becomes an opportunity only when at least two independent source URLs support the same underlying problem and the synthesis quality gate confirms that the sources are coherent. Generic, unrelated, and one-off results remain evidence records and are not shown as opportunities. Click **Scan another batch** to rotate to different customer segments.
+Each scan searches real issue reports, detailed questions, community discussions, and support threads. Source-native filters recognize that a structured issue report can be useful evidence without pretending it is a first-person social post. A result becomes an opportunity only when at least two independent source URLs support the same underlying problem and the synthesis quality gate confirms that the sources are coherent. Thin snippets, planning documents, promotions, unrelated pages, and one-off results are rejected or kept as unconfirmed signals. Click **Scan another batch** to rotate to different customer segments.
 
 Every displayed lead is already persisted. Its **Open full opportunity** button passes the stored cluster ID to **Opportunity Details**, and the same record appears automatically on **Overview** and **Opportunities**. Source buttons always use the original public URL. Placeholder domains such as `.example` are rejected.
 
@@ -162,7 +163,7 @@ content
 
 Optional columns include `source_url`, `title`, `source_author`, and `community`.
 
-**Reddit** supports:
+**Reddit (optional)** supports:
 
 - A Reddit post URL
 - A subreddit name

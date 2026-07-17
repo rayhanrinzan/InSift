@@ -132,7 +132,7 @@ def test_scout_exposes_one_off_evidence_as_pipeline_candidate(
     assert len(pipeline) == 1
     assert pipeline[0].pipeline_stage == "candidate"
     assert pipeline[0].independent_source_count == 1
-    assert pipeline[0].target_customer == "clinic manager"
+    assert pipeline[0].target_customer == "Independent clinic operations"
     clusters = ClusterRepository(db_session).list(limit=10)
     assert len(clusters) == 1
     assert clusters[0].status == "candidate"
@@ -411,3 +411,44 @@ def test_scout_does_not_treat_follow_up_alone_as_operational_pain(
     )
 
     assert run.outcomes == ()
+
+
+def test_scout_accepts_detailed_source_native_issue_report(
+    db_session: Session,
+) -> None:
+    provider = StaticLiveSearchProvider(
+        [
+            SearchResult(
+                title="Patient referral reconciliation fails after status updates",
+                url="https://github.com/example/clinic-ops/issues/42",
+                snippet=(
+                    "Clinic managers manually repair the patient referral spreadsheet "
+                    "because follow-up status updates fail and create missed handoffs."
+                ),
+                content=(
+                    "## Actual behavior The clinic manager manually repairs the patient "
+                    "referral spreadsheet after every status import. Referral follow-up "
+                    "updates fail when two staff members work at once, creating errors "
+                    "and missed handoffs every week. ## Workaround Staff compare the inbox "
+                    "and spreadsheet line by line, which takes hours."
+                ),
+                score=0.91,
+                metadata={
+                    "source_platform": "github",
+                    "source_kind": "issue",
+                    "source_author": "practice-admin",
+                    "engagement_count": 8,
+                },
+            )
+        ]
+    )
+
+    run = ProblemScoutService(
+        provider,
+        _discovery(db_session),
+        DeterministicOpportunitySynthesizer(),
+    ).run(focus="healthcare", segment_limit=1, results_per_segment=1)
+
+    assert len(run.outcomes) == 1
+    assert run.outcomes[0].result.accepted is True
+    assert run.source_breakdown == (("github", 1),)
